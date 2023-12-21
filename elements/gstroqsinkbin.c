@@ -311,23 +311,14 @@ gst_roq_sink_bin_request_new_pad (GstElement *element, GstPadTemplate *templ,
     const gchar *name, const GstCaps *caps)
 {
   GstRoQSinkBin *self = GST_ROQ_SINK_BIN (element);
-  gint pt;
-  guint ssrc;
-  gchar pad_name[48];
   GList *pad_templates;
   GstPad *ghost_pad;
   GstPad *internal_sink_pad = NULL;
 
-  if (name) {
-    g_strlcpy (pad_name, name, 48);
-  } else {
-    g_snprintf (pad_name, 48, rtp_sink_factory.name_template, pt, ssrc);
-  }
-
   GST_DEBUG_OBJECT (self, "Trying to request a new %s pad with name %s",
       (templ->direction == GST_PAD_SINK)?("sink"):(
           (templ->direction == GST_PAD_SRC)?("src"):("unknown direction")),
-      pad_name);
+      name);
 
   g_mutex_lock (&self->mutex);
 
@@ -349,16 +340,16 @@ gst_roq_sink_bin_request_new_pad (GstElement *element, GstPadTemplate *templ,
     return NULL;
   }
 
-  ghost_pad = gst_ghost_pad_new_from_template (pad_name, internal_sink_pad,
+  ghost_pad = gst_ghost_pad_new_from_template (name, internal_sink_pad,
       templ);
   if (ghost_pad == NULL) {
     GST_ERROR_OBJECT (self, "Couldn't create new ghost pad with name %s,"
         "connecting to pad %" GST_PTR_FORMAT " with template %" GST_PTR_FORMAT,
-        pad_name, internal_sink_pad, templ);
+        name, internal_sink_pad, templ);
   } else {
     GST_DEBUG_OBJECT (self, "Created new ghost pad with name %s, "
         "connected to pad %" GST_PTR_FORMAT " with template %" GST_PTR_FORMAT,
-        pad_name, internal_sink_pad, templ);
+        name, internal_sink_pad, templ);
   }
 
   g_mutex_unlock (&self->mutex);

@@ -910,10 +910,10 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 static GstFlowReturn
 gst_rtp_quic_mux_rtcp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 {
-  GstRtpQuicMux *roqmux;
+  /*GstRtpQuicMux *roqmux;*/
   GstPad *target_pad = NULL;
 
-  roqmux = GST_RTPQUICMUX (parent);
+  /*roqmux = GST_RTPQUICMUX (parent);*/
 
   /*
    * TODO: Filter out RTCP messages that are duplicated by QUIC transport

@@ -570,7 +570,6 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
 
   if (g_hash_table_lookup_extended (pts_ht, &pt, NULL,
       (gpointer) &srcpad) == FALSE) {
-#if 1
     gchar *padname;
     gint *pt_ptr;
     GList *pad_list = roqdemux->pending_req_sinks;
@@ -671,44 +670,6 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
       gst_pad_sticky_events_foreach (srcpad, forward_sticky_events,
           NULL);
     }
-#else
-    GstCaps *caps;
-    GstPadTemplate *template;
-    GstPad *pad;
-    gchar *name;
-
-    if (flow_id == (roqdemux->flow_id + 1)) { /* RTCP */
-      template = gst_static_pad_template_get (&rtcp_request_src_factory);
-    } else { /* RTP */
-      template = gst_static_pad_template_get (&rtp_sometimes_src_factory);
-    }
-
-    caps = gst_caps_template_get_caps (template);
-
-    name = g_strdup_printf (template->name_template,
-        (guint32) roqdemux->flow_id, ssrc, pt);
-
-    pad = gst_pad_new_from_template (template, name);
-
-    g_free (name);
-
-    gst_pad_use_fixed_caps (pad);
-
-    g_signal_connect (srcpad, "linked",
-        (GCallback) rtp_quic_demux_src_pad_linked, NULL);
-
-    gst_element_add_pad (GST_ELEMENT (roqdemux), srcpad);
-
-    gst_pad_set_active (srcpad, TRUE);
-
-    if (!gst_pad_is_linked (srcpad) && roqdemux->sink_peer != NULL) {
-      gst_element_link_pads (GST_ELEMENT (roqdemux),
-          GST_PAD_NAME (srcpad), roqdemux->sink_peer, NULL);
-    }
-
-    gst_pad_sticky_events_foreach (srcpad, forward_sticky_events,
-        NULL);
-#endif
 
     if (gst_debug_category_get_threshold (gst_rtp_quic_demux_debug)
         >= GST_LEVEL_DEBUG) {
@@ -1017,6 +978,8 @@ static gboolean
 gst_rtp_quic_demux_pad_query (GstPad *pad, GstObject *parent, GstQuery *query)
 {
   GstRtpQuicDemux *roqdemux = GST_RTPQUICDEMUX (parent);
+
+  GST_DEBUG_OBJECT (roqdemux, "Received pad query %" GST_PTR_FORMAT, query);
 
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_CAPS:
