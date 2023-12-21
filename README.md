@@ -40,8 +40,8 @@ gst-launch-1.0 videotestsrc ! x264enc ! rtph264pay mtu=4294967295 ! rtpquicmux s
 ```
 
 For convenience, you can instead use the `roqsinkbin` element as shown below
-to set up the pipeline of `rtpquicmux`, `quicmux` and `quicsink` elements in
-an client acting as an RTP-over-QUIC sender:
+to set up the pipeline of `rtpquicmux`, `quicmux` and `quicsink` elements
+for a client acting as an RTP-over-QUIC sender:
 
 ```
 gst-launch-1.0 videotestsrc ! x264enc ! rtph264pay mtu=4294967295 ! roqsinkbin location="roq://198.51.100.2:4443" mode=client alpn="rtp-mux-quic-07" stream-boundary="frame"
@@ -62,7 +62,7 @@ gst-launch-1.0 quicsrc location="roq://0.0.0.0:4443" alpn="rtp-mux-quic-07" mode
 
 For convenience, you can instead use the `roqsrcbin` element as shown below
 to set up the pipeline of `quicsrc`, `quicdemux` and `rtpquicdemux` elements
-for server acting as an RTP-over-QUIC receiver:
+for a server acting as an RTP-over-QUIC receiver:
 
 ```
 gst-launch-1.0 roqsrcbin location="roq://0.0.0.0:4443" alpn="rtp-mux-quic-07" mode=server sni="gst-quic.hostname" cert="cert.pem" privkey="key.pem" ! application/x-rtp ! rtph264depay ! queue ! decodebin ! xvimagesink
