@@ -1,9 +1,13 @@
 /*
- * GStreamer
+ * Copyright 2023 British Broadcasting Corporation - Research and Development
+ *
+ * Author: Sam Hurst <sam.hurst@bbc.co.uk>
+ *
+ * Based on the GStreamer template repository:
+ *  https://gitlab.freedesktop.org/gstreamer/gst-template
  * Copyright (C) 2005 Thomas Vander Stichele <thomas@apestaart.org>
  * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
  * Copyright (C) 2020 Niels De Graef <niels.degraef@gmail.com>
- * Copyright (C) 2023 Samuel Hurst <sam.hurst@bbc.co.uk>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
