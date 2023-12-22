@@ -14,26 +14,26 @@ project. For more information, see that project.
 
 ### RTP Stream Mapping
 
-The RTP-over-QUIC mux element has various options to control how RTP frames are
-mapped to QUIC streams. The default is for all RTP packets for a given stream
-to be sent on the same QUIC stream. However, it is also possible to send RTP
-packets on a new stream for each media frame, or even a new stream for each
-group of pictures (if the pipeline encoder supports it). This behaviour is
+The RTP-over-QUIC mux element has various options to control how RTP packets are
+mapped to logical QUIC streams. The default is for all packets belonging to a given RTP session
+to be sent on the same QUIC stream. However, it is also possible to start
+a new QUIC stream for each media frame carried in the RTP session, or even to start a new stream at each
+media access boundary (e.g. Group of Pictures, GOP) if the pipeline encoder supports it. This behaviour is
 controlled by the `stream-boundary` property on the `rtpquicmux` element and
 is also exposed by the `roqsinkbin` element.
 
-The frame- and GOP-per-stream behaviour can be further tweaked by use of the
+The frame-per-stream and GOP-per-stream behaviour can be further tweaked by use of the
 `stream-packing` property, which allows the user to specify that *n* frames or
 GOPs should be sent on each new stream.
 
 It is important to note that the QUIC transport session should be negotiated
 with an appropriately-sized value for the `max-stream-data-uni-remote`
 transport parameter to carry the data. By default, the `gst-quic-transport`
-elements will only allow 128KiB of data on each stream, which may be
-insufficient for larger frame sizes. QUIC transport parameter limits are set
+elements only allow 128KiB of data on each stream, which may be
+insufficient for larger video frame sizes. QUIC transport parameter limits are set
 by the receiver and are not negotiated in the traditional sense. Currently, the
 elements presented here do not attempt to extend stream limits at run time, but
-they will increase the maximum number of unidirectional streams at run time
+they do attempt to negotiate an increase in the maximum number of unidirectional streams with their QUIC peer during the session
 when older streams have been closed.
 
 ## Getting started
@@ -43,7 +43,7 @@ This project depends on:
 - gst-quic-transport
 - GStreamer (>=1.20)
 
-If you do not have `gst-quic-transport` installed, this project will built it
+If you do not have `gst-quic-transport` installed, this project builds it
 as a subproject. The `gst-quic-transport` project additionally depends on the
 following:
 
