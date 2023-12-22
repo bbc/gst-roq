@@ -25,7 +25,7 @@ element and is also exposed by the `roqsinkbin` element.
 
 The frame-per-stream and GOP-per-stream behaviour can be further tweaked by use
 of the `stream-packing` property, which allows the user to specify that *n*
-frames or GOPs should be sent on each new stream.
+media frames or GOPs should be sent on each new QUIC stream.
 
 It is important to note that the QUIC transport session should be negotiated
 with an appropriately-sized value for the `max-stream-data-uni-remote`
