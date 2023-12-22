@@ -15,26 +15,28 @@ project. For more information, see that project.
 ### RTP Stream Mapping
 
 The RTP-over-QUIC mux element has various options to control how RTP packets are
-mapped to logical QUIC streams. The default is for all packets belonging to a given RTP session
-to be sent on the same QUIC stream. However, it is also possible to start
-a new QUIC stream for each media frame carried in the RTP session, or even to start a new stream at each
-media access boundary (e.g. Group of Pictures, GOP) if the pipeline encoder supports it. This behaviour is
-controlled by the `stream-boundary` property on the `rtpquicmux` element and
-is also exposed by the `roqsinkbin` element.
+mapped to logical QUIC streams. The default is for all packets belonging to a
+given RTP session to be sent on the same QUIC stream. However, it is also
+possible to start a new QUIC stream for each media frame carried in the RTP 
+session, or even to start a new stream at each media access boundary
+(e.g. Group of Pictures, GOP) if the pipeline encoder supports it. This
+behaviour is controlled by the `stream-boundary` property on the `rtpquicmux`
+element and is also exposed by the `roqsinkbin` element.
 
-The frame-per-stream and GOP-per-stream behaviour can be further tweaked by use of the
-`stream-packing` property, which allows the user to specify that *n* frames or
-GOPs should be sent on each new stream.
+The frame-per-stream and GOP-per-stream behaviour can be further tweaked by use
+of the `stream-packing` property, which allows the user to specify that *n*
+frames or GOPs should be sent on each new stream.
 
 It is important to note that the QUIC transport session should be negotiated
 with an appropriately-sized value for the `max-stream-data-uni-remote`
 transport parameter to carry the data. By default, the `gst-quic-transport`
 elements only allow 128KiB of data on each stream, which may be
-insufficient for larger video frame sizes. QUIC transport parameter limits are set
-by the receiver and are not negotiated in the traditional sense. Currently, the
-elements presented here do not attempt to extend stream limits at run time, but
-they do attempt to negotiate an increase in the maximum number of unidirectional streams with their QUIC peer during the session
-when older streams have been closed.
+insufficient for larger video frame sizes. QUIC transport parameter limits are
+set by the receiver and are not negotiated in the traditional sense. Currently,
+the elements presented here do not attempt to extend stream limits at run time,
+but they do attempt to negotiate an increase in the maximum number of
+unidirectional streams with their QUIC peer during the session when older
+streams have been closed.
 
 ## Getting started
 
