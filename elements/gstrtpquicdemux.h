@@ -55,6 +55,15 @@
 
 G_BEGIN_DECLS
 
+struct _RtpQuicDemuxSrc
+{
+  GstPad *src;
+  GstClockTime offset;
+  gboolean last_qos_overflow;
+};
+
+typedef struct _RtpQuicDemuxSrc RtpQuicDemuxSrc;
+
 #define RTPQUICDEMUX_TYPE_STREAM rtp_quic_demux_stream_get_type()
 G_DECLARE_FINAL_TYPE (RtpQuicDemuxStream, rtp_quic_demux_stream, RTPQUICDEMUX,
     STREAM, GObject)
@@ -65,6 +74,8 @@ struct _RtpQuicDemuxStream
 
   GstPad *onward_src_pad;
   guint64 expected_payloadlen;
+
+  GstClockTime offset;
 
   /* Concatenate all buffers for a payload together in here */
   GstBuffer *buf;
@@ -87,7 +98,7 @@ struct _GstRtpQuicDemux
   /*
    * GHashTable <guint> { // SSRCs
    *    GHashTable <guint8> { // Payload type
-   *        GstPad; // Src pad
+   *        RtpQuicDemuxSrc;
    *    }
    * }
    */
@@ -103,6 +114,7 @@ struct _GstRtpQuicDemux
   GList *pending_req_sinks;
 
   GstPad *datagram_sink;
+  GstClockTime dg_offset;
 };
 
 G_END_DECLS
