@@ -298,7 +298,7 @@ gst_rtp_quic_mux_init (GstRtpQuicMux * roqmux)
   roqmux->datagram_pad = NULL;
   roqmux->pad_n = 0;
 
-  g_mutex_init (&roqmux->mutex);
+  g_rec_mutex_init (&roqmux->mutex);
   g_cond_init (&roqmux->cond);
 }
 
@@ -462,9 +462,9 @@ gst_rtp_quic_mux_sink_event (GstPad * pad, GstObject * parent,
       break;
     }
     case GST_EVENT_EOS:
-      g_mutex_lock (&roqmux->mutex);
+      g_rec_mutex_lock (&roqmux->mutex);
       ret = gst_element_send_event (roqmux->quicmux, event);
-      g_mutex_unlock (&roqmux->mutex);
+      g_rec_mutex_unlock (&roqmux->mutex);
       break;
     default:
       ret = gst_pad_event_default (pad, parent, event);
@@ -634,9 +634,9 @@ rtp_quic_mux_pad_linked_callback (GstPad *self, GstPad *peer,
 {
   GstRtpQuicMux *roqmux = GST_RTPQUICMUX (user_data);
 
-  g_mutex_lock (&roqmux->mutex);
+  g_rec_mutex_lock (&roqmux->mutex);
   roqmux->quicmux = gst_pad_get_parent_element (peer);
-  g_mutex_unlock (&roqmux->mutex);
+  g_rec_mutex_unlock (&roqmux->mutex);
 }
 
 GstPad *
@@ -657,7 +657,7 @@ rtp_quic_mux_new_uni_src_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
 
   g_free (padname);
 
-  g_mutex_lock (&roqmux->mutex);
+  g_rec_mutex_lock (&roqmux->mutex);
 
   if (roqmux->quicmux == NULL) {
     g_signal_connect (rv, "linked",
@@ -677,7 +677,7 @@ rtp_quic_mux_new_uni_src_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
     }
   }
 
-  g_mutex_unlock (&roqmux->mutex);
+  g_rec_mutex_unlock (&roqmux->mutex);
 
   gst_pad_sticky_events_foreach (sinkpad, rtp_quic_mux_foreach_sticky_event,
       (gpointer) rv);
@@ -693,7 +693,7 @@ rtp_quic_mux_pad_added_callback (GstElement *self, GstPad *pad,
 {
   GstRtpQuicMux *roqmux = GST_RTPQUICMUX (self);
 
-  g_mutex_lock (&roqmux->mutex);
+  g_rec_mutex_lock (&roqmux->mutex);
 
   if (!gst_pad_is_linked (pad)) {
     g_assert (roqmux->quicmux != NULL);
@@ -710,7 +710,7 @@ rtp_quic_mux_pad_added_callback (GstElement *self, GstPad *pad,
         roqmux->quicmux);
   }
 
-  g_mutex_unlock (&roqmux->mutex);
+  g_rec_mutex_unlock (&roqmux->mutex);
 }
 
 const gchar *
@@ -944,9 +944,9 @@ rtp_quic_mux_hash_value_destroy (GHashTable *pts)
 void
 gst_rtp_quic_mux_set_quicmux (GstRtpQuicMux *roqmux, GstQuicMux *qmux)
 {
-  g_mutex_lock (&roqmux->mutex);
+  g_rec_mutex_lock (&roqmux->mutex);
   roqmux->quicmux = GST_ELEMENT (qmux);
-  g_mutex_unlock (&roqmux->mutex);
+  g_rec_mutex_unlock (&roqmux->mutex);
 }
 
 /* entry point to initialize the plug-in

@@ -112,7 +112,7 @@ struct _GstRtpQuicMux
    */
   GHashTable *ssrcs;
 
-  GMutex mutex;
+  GRecMutex mutex;
   GCond cond;
 };
 
