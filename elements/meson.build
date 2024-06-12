@@ -95,6 +95,18 @@ gstrtpquicmux = library('gstrtpquicmux',
 
 rtpquicmux_dep = declare_dependency(link_with: gstrtpquicmux)
 
+install_headers ('gstrtpquicmux.h', subdir : meson.project_name())
+
+pkg_mod = import ('pkgconfig')
+
+pkg_mod.generate(
+  name : gstrtpquicmux.name(),
+  filebase : gstrtpquicmux.name(),
+  description : 'RTP-over-QUIC Muxer element',
+  subdirs : gstrtpquicmux.name(),
+  libraries : gstrtpquicmux
+)
+
 roqsrcbin_sources = [
   'gstroqsrcbin.c'
   ]
