@@ -115,6 +115,9 @@ struct _GstRtpQuicDemux
 
   GstPad *datagram_sink;
   GstClockTime dg_offset;
+
+  guint64 uni_stream_type;
+  gboolean match_uni_stream_type;
 };
 
 G_END_DECLS

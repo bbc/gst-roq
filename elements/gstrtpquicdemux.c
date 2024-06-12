@@ -123,6 +123,8 @@ enum
 {
   PROP_0,
   PROP_FLOW_ID
+  PROP_UNI_STREAM_TYPE,
+  PROP_USE_UNI_STREAM_HEADER
 };
 
 /**
@@ -270,6 +272,20 @@ gst_rtp_quic_demux_class_init (GstRtpQuicDemuxClass * klass)
           "observed flow ID will be taken.",
           -1, 4611686018427387902, -1, G_PARAM_READWRITE));
 
+  g_object_class_install_property (gobject_class, PROP_UNI_STREAM_TYPE,
+      g_param_spec_uint64 ("uni-stream-type",
+          "Unidirectional stream header type", "The value of the stream type "
+          "field that this element should recognise when queried if "
+          "use-uni-stream-hdr is set", 0, QUICLIB_VARINT_MAX, 0,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_USE_UNI_STREAM_HEADER,
+      g_param_spec_boolean ("use-uni-stream-hdr",
+          "Use a unidirectional stream header", "Look for a unidirectional "
+          "stream header on every new stream and only agree to demux it if it "
+          "matches the value specified in uni-stream-type", FALSE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gst_element_class_set_static_metadata (gstelement_class,
         "RTP-over-QUIC demultiplexer", "Demuxer/Network/Protocol",
         "Receive RTP-over-QUIC media data via QUIC transport",
@@ -319,6 +335,11 @@ gst_rtp_quic_demux_set_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_FLOW_ID:
       roqdemux->flow_id = g_value_get_int64 (value);
+    case PROP_UNI_STREAM_TYPE:
+      roqdemux->uni_stream_type = g_value_get_uint64 (value);
+      break;
+    case PROP_USE_UNI_STREAM_HEADER:
+      roqdemux->match_uni_stream_type = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -335,6 +356,11 @@ gst_rtp_quic_demux_get_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_FLOW_ID:
       g_value_set_int64 (value, roqdemux->flow_id);
+    case PROP_UNI_STREAM_TYPE:
+      g_value_set_uint64 (value, roqdemux->uni_stream_type);
+      break;
+    case PROP_USE_UNI_STREAM_HEADER:
+      g_value_set_boolean (value, roqdemux->match_uni_stream_type);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -816,7 +842,19 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
       gst_buffer_map (buf, &map, GST_MAP_READ);
 
-      varint_len = gst_quiclib_get_varint (map.data, &flowid);
+      if (roqdemux->match_uni_stream_type) {
+        guint64 uni_stream_type;
+
+        varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
+
+        if (uni_stream_type != roqdemux->uni_stream_type) {
+          GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %lu "
+              "received doesn't match expected stream type %lu",
+              uni_stream_type, roqdemux->uni_stream_type);
+          return GST_FLOW_ERROR;
+        }
+      }
+      varint_len += gst_quiclib_get_varint (map.data + varint_len, &flowid);
       varint_len += gst_quiclib_get_varint (map.data + varint_len,
           &stream->expected_payloadlen);
 
@@ -961,7 +999,7 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
           GstMapInfo map;
           guint64 flow_id;
           guint64 payload_size;
-          gsize varint_size;
+          gsize varint_size = 0;
           guint8 payload_type;
           guint32 ssrc;
           RtpQuicDemuxStream *stream;
@@ -971,15 +1009,28 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
            */
           gint64 *stream_id_ptr = g_new (gint64, 1);
 
-          g_warn_if_fail (gst_structure_get_uint64 (s, "uni-stream-type",
-              &uni_stream_type));
 
           buf_box = gst_structure_get_value (s, "stream-buf-peek");
           peek = GST_BUFFER (g_value_get_pointer (buf_box));
 
           gst_buffer_map (peek, &map, GST_MAP_READ);
 
-          varint_size = gst_quiclib_get_varint (map.data, &flow_id);
+          if (roqdemux->match_uni_stream_type) {
+            varint_size = gst_quiclib_get_varint (map.data, &uni_stream_type);
+
+            GST_TRACE_OBJECT (roqdemux, "Found uni stream type %lu", uni_stream_type);
+
+            if (uni_stream_type != roqdemux->uni_stream_type) {
+              GST_INFO_OBJECT (roqdemux, "Uni stream type %lu for stream ID %lu"
+                  " does not match configured %lu, ignoring this stream.",
+                  uni_stream_type, stream_id, roqdemux->uni_stream_type);
+              gst_buffer_unmap (peek, &map);
+              return FALSE;
+            }
+          }
+
+          varint_size += gst_quiclib_get_varint (map.data + varint_size,
+              &flow_id);
           varint_size += gst_quiclib_get_varint (map.data + varint_size,
               &payload_size);
 

@@ -99,7 +99,9 @@ struct _GstRtpQuicMux
   gint64 flow_id;
   GstRtpQuicMuxStreamBoundary stream_boundary;
   guint stream_packing_ratio;
+  guint64 uni_stream_type;
   gboolean use_datagrams;
+  gboolean add_uni_stream_header;
   GstPad *datagram_pad;
   guint pad_n;
 
@@ -125,12 +127,16 @@ gst_rtp_quic_mux_set_quicmux (GstRtpQuicMux *roqmux, GstQuicMux *qmux);
   PROP_FLOW_ID, \
   PROP_STREAM_BOUNDARY, \
   PROP_STREAM_PACKING, \
-  PROP_USE_DATAGRAM
+  PROP_UNI_STREAM_TYPE, \
+  PROP_USE_DATAGRAM, \
+  PROP_USE_UNI_STREAM_HEADER
 
 #define PROP_RTPQUICMUX_ENUM_CASES PROP_FLOW_ID:\
   case PROP_STREAM_BOUNDARY: \
   case PROP_STREAM_PACKING: \
-  case PROP_USE_DATAGRAM
+  case PROP_UNI_STREAM_TYPE: \
+  case PROP_USE_DATAGRAM: \
+  case PROP_USE_UNI_STREAM_HEADER
 
 #define gst_rtp_quic_mux_install_properties_map(klass) \
   g_object_class_install_property (gobject_class, PROP_FLOW_ID, \
@@ -159,9 +165,22 @@ gst_rtp_quic_mux_set_quicmux (GstRtpQuicMux *roqmux, GstQuicMux *qmux);
           "of 5 with a GOP stream boundary means 5 GOPs per stream", \
           1, G_MAXUINT, 1, G_PARAM_READWRITE)); \
 \
+  g_object_class_install_property (gobject_class, PROP_UNI_STREAM_TYPE, \
+      g_param_spec_uint64 ("uni-stream-type", \
+          "Unidirectional stream header type", "The value of the stream type " \
+          "field to add to new streams if use-uni-stream-hdr set", \
+          0, QUICLIB_VARINT_MAX, 0, G_PARAM_READWRITE)); \
+\
   g_object_class_install_property (gobject_class, PROP_USE_DATAGRAM, \
       g_param_spec_boolean ("use-datagram", "Use datagrams", \
-          "Send RT(C)P packets using the QUIC datagram extension", FALSE, \
+          "Send RT(C)P packets using the QUIC datagram extension. Mutually " \
+          "exclusive with use-uni-stream-hdr", FALSE, G_PARAM_READWRITE)); \
+\
+  g_object_class_install_property (gobject_class, PROP_USE_UNI_STREAM_HEADER, \
+      g_param_spec_boolean ("use-uni-stream-hdr", \
+          "Use a unidirectional stream header", "Add a unidirectional stream " \
+          "header to every new stream. Useful for using with protocols such " \
+          "as SIP-over-QUIC. Mutually exclusive with use-datagram", FALSE, \
           G_PARAM_READWRITE));
 
 G_END_DECLS
