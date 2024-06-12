@@ -493,7 +493,6 @@ gst_rtp_quic_mux_request_new_pad (GstElement *element, GstPadTemplate *templ,
   GstPadChainFunction chainfunc;
   GstPad *pad;
   guint padcount = 0;
-  GstQuicLibTimerCtx *tctx = gst_quiclib_start_exec_timer (__func__, __LINE__);
 
   switch (rtp_quic_mux_get_caps_type (templ->caps)) {
   case CAPS_RTP:
