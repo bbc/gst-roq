@@ -999,6 +999,17 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
     g_mutex_lock (&stream->mutex);
 
+    if (stream->frame_cancelled) {
+      if (GST_BUFFER_FLAGS (buf) & GST_BUFFER_FLAG_MARKER) {
+        /* Start of a new frame, so start sending again */
+        GST_DEBUG_OBJECT (roqmux, "New frame started, sending again");
+        stream->frame_cancelled = FALSE;
+      } else {
+        g_mutex_unlock (&stream->mutex);
+        return GST_FLOW_OK;
+      }
+    }
+
     if (stream->stream_pad == NULL) {
       stream->stream_pad = rtp_quic_mux_new_uni_src_pad (roqmux, pad);
       g_hash_table_insert (roqmux->src_pads, (gpointer) stream->stream_pad,
