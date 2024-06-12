@@ -911,6 +911,25 @@ rtp_quic_mux_flow_return_as_string (GstFlowReturn fr)
   return "Unknown Flow Return!";
 }
 
+static gboolean
+_rtp_quic_mux_open_datagram_pad (GstRtpQuicMux *roqmux)
+{
+  gchar *padname;
+
+  padname = g_strdup_printf (quic_datagram_src_factory.name_template,
+      0);
+
+  roqmux->datagram_pad = gst_pad_new_from_static_template (
+      &quic_datagram_src_factory, padname);
+
+  g_assert (roqmux->datagram_pad);
+
+  g_free (padname);
+
+  gst_pad_set_active (roqmux->datagram_pad, TRUE);
+  return gst_element_add_pad (GST_ELEMENT (roqmux), roqmux->datagram_pad);
+}
+
 static GstFlowReturn
 gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 {
