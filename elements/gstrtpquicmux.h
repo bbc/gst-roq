@@ -79,6 +79,7 @@ struct _RtpQuicMuxStream
   GstPad *stream_pad;
 
   guint counter;
+  gboolean frame_cancelled;
 
   GMutex mutex;
   GCond wait;
@@ -96,7 +97,8 @@ struct _GstRtpQuicMux
 
   GstElement *quicmux;
 
-  gint64 flow_id;
+  gint64 rtp_flow_id;
+  gint64 rtcp_flow_id;
   GstRtpQuicMuxStreamBoundary stream_boundary;
   guint stream_packing_ratio;
   guint64 uni_stream_type;
@@ -113,6 +115,19 @@ struct _GstRtpQuicMux
    * }
    */
   GHashTable *ssrcs;
+  /*
+   * GHashTable <GstPad> { // src pad
+   *   RtpQuicMuxStream;
+   * }
+   */
+  GHashTable *src_pads;
+
+  /*
+   * GHashTable <GstPad> { // RTCP sink pad
+   *   GstPad; // RTCP src pad
+   * }
+   */
+  GHashTable *rtcp_pads;
 
   GRecMutex mutex;
   GCond cond;
@@ -124,14 +139,16 @@ void
 gst_rtp_quic_mux_set_quicmux (GstRtpQuicMux *roqmux, GstQuicMux *qmux);
 
 #define PROP_RTPQUICMUX_ENUMS \
-  PROP_FLOW_ID, \
+  PROP_RTP_FLOW_ID, \
+  PROP_RTCP_FLOW_ID, \
   PROP_STREAM_BOUNDARY, \
   PROP_STREAM_PACKING, \
   PROP_UNI_STREAM_TYPE, \
   PROP_USE_DATAGRAM, \
   PROP_USE_UNI_STREAM_HEADER
 
-#define PROP_RTPQUICMUX_ENUM_CASES PROP_FLOW_ID:\
+#define PROP_RTPQUICMUX_ENUM_CASES PROP_RTP_FLOW_ID:\
+  case PROP_RTCP_FLOW_ID: \
   case PROP_STREAM_BOUNDARY: \
   case PROP_STREAM_PACKING: \
   case PROP_UNI_STREAM_TYPE: \
@@ -139,19 +156,20 @@ gst_rtp_quic_mux_set_quicmux (GstRtpQuicMux *roqmux, GstQuicMux *qmux);
   case PROP_USE_UNI_STREAM_HEADER
 
 #define gst_rtp_quic_mux_install_properties_map(klass) \
-  g_object_class_install_property (gobject_class, PROP_FLOW_ID, \
-      g_param_spec_int64 ("flow-id", "Flow Identifier", \
-          "Identifies a stream of RT(C)P packets and allows for multiple " \
+  g_object_class_install_property (gobject_class, PROP_RTP_FLOW_ID, \
+      g_param_spec_int64 ("rtp-flow-id", "RTP Flow Identifier", \
+          "Identifies a stream of RTP packets and allows for multiple " \
           "streams to be multiplexed on a single connection. -1 will result " \
           "in a value being chosen that should be unique across all instances " \
           "of the rtpquicmux element", \
-  /*
-   * The max is 2 ^ 62 - 2 in order to account for the fact that this element \
-   * assumes that any RTCP flows will have a flow identifier +1 from what is \
-   * specified here. This means you can't set a flow id that would go outside \
-   * the bounds of a variable length integer. \
-   */ \
-          -1, QUICLIB_VARINT_MAX - 1, -1, G_PARAM_READWRITE)); \
+          -1, QUICLIB_VARINT_MAX, -1, G_PARAM_READWRITE)); \
+\
+  g_object_class_install_property (gobject_class, PROP_RTCP_FLOW_ID, \
+      g_param_spec_int64 ("rtcp-flow-id", "RTCP Flow Identifier", \
+          "Identifies a stream of RTCP packets and allows for multiple " \
+          "streams to be multiplexed on a single connection. -1 will cause " \
+          "this property to be set to the value of the RTP flow-id +1.", \
+          -1, QUICLIB_VARINT_MAX, -1, G_PARAM_READWRITE)); \
 \
   g_object_class_install_property (gobject_class, PROP_STREAM_BOUNDARY, \
       g_param_spec_enum ("stream-boundary", "Stream Boundary", \

@@ -53,6 +53,20 @@ cdata.set_quoted('GST_PACKAGE_NAME', 'RTP-over-QUIC Plug-ins for GStreamer')
 cdata.set_quoted('GST_PACKAGE_ORIGIN', 'https://github.com/bbc/gst-roq')
 configure_file(output : 'config.h', configuration : cdata)
 
+roqflowidmanager_sources = [
+  'gstroqflowidmanager.c'
+]
+
+roqflowidmanager = library('roqflowidmanager',
+  roqflowidmanager_sources,
+  c_args : plugin_c_args,
+  dependencies : [gst_dep],
+  install: true,
+  install_dir : plugins_install_dir
+)
+
+roqflowidmanager_dep = declare_dependency(link_with: roqflowidmanager)
+
 rtpquicdemux_sources = [
   'gstrtpquicdemux.c'
   ]
@@ -74,7 +88,7 @@ gstrtpquicmux = library('gstrtpquicmux',
   rtpquicmux_sources,
   c_args : plugin_c_args,
   dependencies : [gst_dep, quiclib_dep, quicutil_dep, quicstream_dep,
-    quicdatagram_dep],
+    quicdatagram_dep, roqflowidmanager_dep],
   install : true,
   install_dir : plugins_install_dir,
 )

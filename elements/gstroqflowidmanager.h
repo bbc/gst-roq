@@ -1,14 +1,8 @@
 /*
- * Copyright 2023 British Broadcasting Corporation - Research and Development
+ * Copyright 2024 British Broadcasting Corporation - Research and Development
  *
  * Author: Sam Hurst <sam.hurst@bbc.co.uk>
  *
- * Based on the GStreamer template repository:
- *  https://gitlab.freedesktop.org/gstreamer/gst-template
- * Copyright (C) 2005 Thomas Vander Stichele <thomas@apestaart.org>
- * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
- * Copyright (C) 2020 Niels De Graef <niels.degraef@gmail.com>
- * 
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
@@ -48,86 +42,26 @@
  * Boston, MA 02111-1307, USA.
  */
 
-#ifndef __GST_RTPQUICDEMUX_H__
-#define __GST_RTPQUICDEMUX_H__
+#ifndef __GST_ROQFLOWIDMANAGER_H__
+#define __GST_ROQFLOWIDMANAGER_H__
 
 #include <gst/gst.h>
 
 G_BEGIN_DECLS
 
-struct _RtpQuicDemuxSrc
-{
-  GstPad *src;
-  GstClockTime offset;
-  gboolean last_qos_overflow;
-};
+#define GST_TYPE_ROQ_FLOW_ID_MANAGER ( \
+    gst_roq_flow_id_manager_get_type())
+G_DECLARE_FINAL_TYPE (GstROQFlowIDManager, gst_roq_flow_id_manager, GST,
+    ROQ_FLOW_ID_MANAGER, GstObject);
 
-typedef struct _RtpQuicDemuxSrc RtpQuicDemuxSrc;
+GList *gst_roq_flow_id_manager_get_all ();
 
-#define RTPQUICDEMUX_TYPE_STREAM rtp_quic_demux_stream_get_type()
-G_DECLARE_FINAL_TYPE (RtpQuicDemuxStream, rtp_quic_demux_stream, RTPQUICDEMUX,
-    STREAM, GObject)
+gboolean gst_roq_flow_id_manager_new_flow_id (guint64 flow_id);
 
-struct _RtpQuicDemuxStream
-{
-  GObject parent;
+gboolean gst_roq_flow_id_manager_flow_id_in_use (guint64 flow_id);
 
-  GstPad *onward_src_pad;
-  guint64 expected_payloadlen;
-
-  GstClockTime offset;
-
-  /* Concatenate all buffers for a payload together in here */
-  GstBuffer *buf;
-};
-
-typedef struct _RtpQuicDemuxStream RtpQuicDemuxStream;
-
-#define GST_TYPE_RTPQUICDEMUX (gst_rtp_quic_demux_get_type())
-G_DECLARE_FINAL_TYPE (GstRtpQuicDemux, gst_rtp_quic_demux,
-    GST, RTPQUICDEMUX, GstElement)
-
-struct _GstRtpQuicDemux
-{
-  GstElement element;
-
-  GstElement *sink_peer;
-
-  gint64 rtp_flow_id;
-  gint64 rtcp_flow_id;
-
-  /*
-   * GHashTable <guint> { // SSRCs
-   *    GHashTable <guint8> { // Payload type
-   *        RtpQuicDemuxSrc;
-   *    }
-   * }
-   */
-  GHashTable *src_ssrcs;
-
-  /*
-   * GHashTable <guint> { // SSRCs
-   *    GstPad;
-   * }
-   */
-  GHashTable *src_ssrcs_rtcp;
-
-  /*
-   * GHashTable <guint64> { // QUIC Stream ID
-   *    RtpQuicDemuxStream;
-   * }
-   */
-  GHashTable *quic_streams;
-
-  GList *pending_req_sinks;
-
-  GstPad *datagram_sink;
-  GstClockTime dg_offset;
-
-  guint64 uni_stream_type;
-  gboolean match_uni_stream_type;
-};
+void gst_roq_flow_id_manager_retire_flow_id (guint64 flow_id);
 
 G_END_DECLS
 
-#endif /* __GST_RTPQUICDEMUX_H__ */
+#endif /* __GST_ROQFLOWIDMANAGER_H__ */

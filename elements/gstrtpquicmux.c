@@ -128,6 +128,7 @@
 #include <gst/gst.h>
 
 #include "gstrtpquicmux.h"
+#include "gstroqflowidmanager.h"
 #include <gst-quic-transport/gstquiccommon.h>
 /* DEBUGGING ONLY */
 #include <gst-quic-transport/gstquicstream.h>
@@ -158,6 +159,17 @@ gst_rtp_quic_mux_stream_boundary_get_type (void)
   }
 
   return type;
+}
+
+const gchar *
+_rtp_quic_mux_stream_boundary_as_string (GstRtpQuicMuxStreamBoundary sb)
+{
+  switch (sb) {
+    case STREAM_BOUNDARY_FRAME: return "FRAME";
+    case STREAM_BOUNDARY_GOP: return "GOP";
+    case STREAM_BOUNDARY_SINGLE_STREAM: return "SINGLE STREAM";
+  }
+  return "UNKNOWN";
 }
 
 enum
@@ -234,6 +246,7 @@ static GstPad * gst_rtp_quic_mux_request_new_pad (GstElement *element,
 static void gst_rtp_quic_mux_release_pad (GstElement *element, GstPad *pad);
 
 void rtp_quic_mux_hash_value_destroy (GHashTable *pts);
+void rtp_quic_mux_remove_rtcp_pad (GstPad *pad);
 
 void rtp_quic_mux_pad_added_callback (GstElement *self, GstPad *pad,
     gpointer user_data);
@@ -287,11 +300,17 @@ gst_rtp_quic_mux_init (GstRtpQuicMux * roqmux)
 {
   roqmux->ssrcs = g_hash_table_new_full (g_int_hash, g_int_equal,
       g_free, (GDestroyNotify) rtp_quic_mux_hash_value_destroy);
+  roqmux->src_pads = g_hash_table_new (g_direct_hash, g_direct_equal);
+  roqmux->rtcp_pads = g_hash_table_new_full (g_direct_hash, g_direct_equal,
+      NULL, (GDestroyNotify) rtp_quic_mux_remove_rtcp_pad);
 
   roqmux->quicmux = NULL;
 
   /* TODO: How to make this unique? */
-  roqmux->flow_id = (gint64) g_random_int_range (0, 2147483647);
+  do {
+    roqmux->rtp_flow_id = (gint64) g_random_int_range (0, 2147483647);
+  } while (!gst_roq_flow_id_manager_new_flow_id (roqmux->rtp_flow_id));
+  roqmux->rtcp_flow_id = -1;
   roqmux->stream_boundary = STREAM_BOUNDARY_SINGLE_STREAM;
   roqmux->stream_packing_ratio = 1;
   roqmux->use_datagrams = FALSE;
@@ -309,12 +328,47 @@ gst_rtp_quic_mux_set_property (GObject * object, guint prop_id,
   GstRtpQuicMux *roqmux = GST_RTPQUICMUX (object);
 
   switch (prop_id) {
-    case PROP_FLOW_ID:
-      roqmux->flow_id = g_value_get_int64 (value);
-      if (roqmux->flow_id == -1) {
-        roqmux->flow_id = (gint64) g_random_int_range (0, 2147483647);
+    case PROP_RTP_FLOW_ID:
+    {
+      gint64 flow_id = g_value_get_int64 (value);
+      if (flow_id == -1) {
+        while (1) {
+          flow_id = (gint64) g_random_int_range (0, 2147483647);
+          if (!gst_roq_flow_id_manager_flow_id_in_use ((guint64) flow_id))
+            break;
+        }
+      }
+      if (gst_roq_flow_id_manager_new_flow_id ((guint64) flow_id)) {
+        gst_roq_flow_id_manager_retire_flow_id ((guint64) roqmux->rtp_flow_id);
+        if (roqmux->rtcp_flow_id == -1) {
+          gst_roq_flow_id_manager_retire_flow_id (
+            (guint64) roqmux->rtp_flow_id + 1);
+          gst_roq_flow_id_manager_new_flow_id ((guint64) flow_id);
+        }
+        roqmux->rtp_flow_id = flow_id;
+      } else {
+        GST_ERROR_OBJECT (roqmux, "Couldn't set Flow ID to %lu as this is "
+            "already in use elsewhere!", flow_id);
       }
       break;
+    }
+    case PROP_RTCP_FLOW_ID:
+    {
+      gint64 new_flow_id = g_value_get_int64 (value);
+      
+      if (new_flow_id == -1) {
+        
+      } else if (gst_roq_flow_id_manager_new_flow_id ((guint64) new_flow_id)) {
+        if (roqmux->rtcp_flow_id == -1) {
+          gst_roq_flow_id_manager_retire_flow_id (
+            (guint64) roqmux->rtp_flow_id + 1);
+        } else {
+          gst_roq_flow_id_manager_retire_flow_id (
+            (guint64) roqmux->rtcp_flow_id);
+        }
+      }
+      break;
+    }
     case PROP_STREAM_BOUNDARY:
       roqmux->stream_boundary = g_value_get_enum (value);
       g_assert ((roqmux->stream_boundary >= STREAM_BOUNDARY_FRAME) &&
@@ -353,8 +407,11 @@ gst_rtp_quic_mux_get_property (GObject * object, guint prop_id,
   GstRtpQuicMux *roqmux = GST_RTPQUICMUX (object);
 
   switch (prop_id) {
-    case PROP_FLOW_ID:
-      g_value_set_int64 (value, roqmux->flow_id);
+    case PROP_RTP_FLOW_ID:
+      g_value_set_int64 (value, roqmux->rtp_flow_id);
+      break;
+    case PROP_RTCP_FLOW_ID:
+      g_value_set_int64 (value, roqmux->rtcp_flow_id);
       break;
     case PROP_STREAM_BOUNDARY:
       g_value_set_enum (value, roqmux->stream_boundary);
@@ -417,32 +474,61 @@ done:
   return rv;
 }
 
+gboolean
+_rtp_quic_mux_count_pads (GstElement *element, GstPad *pad, gpointer user_data)
+{
+  guint *count = (guint *) user_data;
+  if (pad != NULL) {
+    (*count)++;
+  }
+  return TRUE;
+}
+
 static GstPad *
 gst_rtp_quic_mux_request_new_pad (GstElement *element, GstPadTemplate *templ,
     const gchar *name, const GstCaps *caps)
 {
   GstRtpQuicMux *roqmux = GST_RTPQUICMUX (element);
+  gchar *padname = NULL;
+  GstPadChainFunction chainfunc;
   GstPad *pad;
-
-  GST_DEBUG_OBJECT (roqmux, "Requested pad with name %s", name);
-
-  pad = gst_pad_new_from_template (templ, name);
+  guint padcount = 0;
+  GstQuicLibTimerCtx *tctx = gst_quiclib_start_exec_timer (__func__, __LINE__);
 
   switch (rtp_quic_mux_get_caps_type (templ->caps)) {
   case CAPS_RTP:
-    gst_pad_set_chain_function (pad, gst_rtp_quic_mux_rtp_chain);
+    chainfunc = gst_rtp_quic_mux_rtp_chain;
+    if (name) {
+      padname = g_strdup (name);
+    } else {
+      gst_element_foreach_sink_pad (element, _rtp_quic_mux_count_pads,
+          (gpointer) &padcount);
+      padname = g_strdup_printf ("rtp_pad%u", padcount);
+    }
     break;
   case CAPS_RTCP:
-    gst_pad_set_chain_function (pad, gst_rtp_quic_mux_rtcp_chain);
+    chainfunc = gst_rtp_quic_mux_rtcp_chain;
+    if (name) {
+      padname = g_strdup (name);
+    } else {
+      gst_element_foreach_sink_pad (element, _rtp_quic_mux_count_pads,
+          (gpointer) &padcount);
+      padname = g_strdup_printf ("rtcp_pad%u", padcount);
+    }
     break;
   default:
     gchar *s = gst_caps_to_string (caps);
     GST_ERROR_OBJECT (roqmux, "Unknown caps type: %s", s);
     g_free (s);
-    g_object_unref (pad);
     return NULL;
   }
 
+  GST_DEBUG_OBJECT (roqmux, "Creaing new pad with name %s and caps %"
+      GST_PTR_FORMAT, padname, templ->caps);
+
+  pad = gst_pad_new_from_template (templ, padname);
+
+  gst_pad_set_chain_function (pad, chainfunc);
   gst_pad_set_event_function (pad, gst_rtp_quic_mux_sink_event);
 
   gst_element_add_pad (element, pad);
@@ -500,7 +586,10 @@ void
 rtp_quic_mux_pt_hash_destroy (RtpQuicMuxStream *stream)
 {
   GstElement *parent = GST_ELEMENT (gst_pad_get_parent (stream->stream_pad));
+  g_mutex_lock (&stream->mutex);
+  g_hash_table_remove (GST_RTPQUICMUX (parent)->src_pads, stream->stream_pad);
   gst_element_remove_pad (parent, stream->stream_pad);
+  g_mutex_unlock (&stream->mutex);
   g_free (stream);
 }
 
@@ -599,9 +688,10 @@ gboolean
 rtp_quic_mux_write_payload_header (GstRtpQuicMux *roqmux, GstBuffer **buf,
     gboolean rtcp, gboolean add_flow_id, gboolean add_stream_header)
 {
-  gsize buf_len, varlen_len;
+  gsize buf_len, varlen_len = 0;
   GstMemory *mem;
   GstMapInfo map;
+  guint64 flow_id;
 
   buf_len = gst_buffer_get_size (*buf);
 
@@ -691,6 +781,29 @@ rtp_quic_mux_pad_linked_callback (GstPad *self, GstPad *peer,
   g_rec_mutex_unlock (&roqmux->mutex);
 }
 
+void
+rtp_quic_mux_pad_unlinked_callback (GstPad * self, GstPad * peer,
+    gpointer user_data)
+{
+  GstRtpQuicMux *roqmux = GST_RTPQUICMUX (user_data);
+  RtpQuicMuxStream *stream;
+
+  GST_TRACE_OBJECT (roqmux, "Pad %" GST_PTR_FORMAT " unlinked from peer pad %"
+      GST_PTR_FORMAT, self, peer);
+
+  if (!g_hash_table_lookup_extended (roqmux->src_pads, (gpointer) self, NULL,
+      (gpointer *) &stream)) {
+    GST_DEBUG_OBJECT (roqmux, "Couldn't find stream object for pad %"
+        GST_PTR_FORMAT ", already closed?", self);
+  } else {
+    g_mutex_lock (&stream->mutex);
+    gst_element_remove_pad (GST_ELEMENT (roqmux), stream->stream_pad);
+    g_hash_table_remove (roqmux->src_pads, (gpointer) stream->stream_pad);
+    stream->stream_pad = NULL;
+    g_mutex_unlock (&stream->mutex);
+  }
+}
+
 GstPad *
 rtp_quic_mux_new_uni_src_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
 {
@@ -731,10 +844,14 @@ rtp_quic_mux_new_uni_src_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
 
   g_rec_mutex_unlock (&roqmux->mutex);
 
+  g_signal_connect (rv, "unlinked", 
+      (GCallback) rtp_quic_mux_pad_unlinked_callback, (gpointer) roqmux);
+
   gst_pad_sticky_events_foreach (sinkpad, rtp_quic_mux_foreach_sticky_event,
       (gpointer) rv);
 
-  GST_TRACE_OBJECT (roqmux, "Opened new stream");
+  GST_TRACE_OBJECT (roqmux, "Opened new stream with pad %" GST_PTR_FORMAT 
+      " linked to pad %" GST_PTR_FORMAT, rv, GST_PAD_PEER (rv));
 
   return rv;
 }
@@ -917,8 +1034,9 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       }
     }
 
-    target_pad = stream->stream_pad;
+    target_pad = gst_object_ref (stream->stream_pad);
 
+    /* Hold until the end to stop the pad going way while we're using it */
     g_mutex_unlock (&stream->mutex);
 
     GST_DEBUG_OBJECT (roqmux,
@@ -926,23 +1044,10 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         gst_buffer_get_size (buf));
   } else {
     if (roqmux->datagram_pad == NULL) {
-      gchar *padname;
-
-      padname = g_strdup_printf (quic_datagram_src_factory.name_template,
-          0);
-
-      roqmux->datagram_pad = gst_pad_new_from_static_template (
-          &quic_datagram_src_factory, padname);
-
-      g_assert (roqmux->datagram_pad);
-
-      g_free (padname);
-
-      gst_pad_set_active (roqmux->datagram_pad, TRUE);
-      gst_element_add_pad (GST_ELEMENT (roqmux), roqmux->datagram_pad);
+      _rtp_quic_mux_open_datagram_pad (roqmux);
     }
 
-    target_pad = roqmux->datagram_pad;
+    target_pad = gst_object_ref (roqmux->datagram_pad);
 
     rtp_quic_mux_write_payload_header (roqmux, &buf, FALSE, TRUE, FALSE);
 
@@ -955,7 +1060,60 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     return GST_FLOW_NOT_NEGOTIATED;
   }
 
+  if (gst_debug_category_get_threshold (gst_rtp_quic_mux_debug)
+      >= GST_LEVEL_DEBUG) {
+    GstMapInfo map;
+    gsize off = 0;
+    guint64 uni_stream_type;
+    guint64 flow_id;
+    guint64 payload_length;
+    gboolean padding;
+    gboolean extension_present;
+    guint8 cc;
+    guint8 pt;
+    guint16 seq_num;
+    guint32 timestamp;
+    guint32 ssrc;
+
+    gst_buffer_map (buf, &map, GST_MAP_READ);
+    if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+      off += gst_quiclib_get_varint (map.data + off, &uni_stream_type);
+    }
+    off += gst_quiclib_get_varint (map.data + off, &flow_id);
+    off += gst_quiclib_get_varint (map.data + off, &payload_length);
+    padding = (map.data[off] & 0x20) > 0;
+    extension_present = (map.data[off] & 0x10) > 0;
+    cc = map.data[off] & 0x0f;
+    pt = map.data[off + 1];
+    seq_num = (map.data[off + 2] << 8) + (map.data[off + 3]);
+    timestamp = (map.data[off + 4] << 24) + (map.data[off + 5] << 16) +
+      (map.data[off + 6] << 8) + (map.data[off + 7]);
+    ssrc = (map.data[off + 8] << 24) + (map.data[off + 9] << 16) +
+      (map.data[off + 10] << 8) + (map.data[off + 11]);
+    gst_buffer_unmap (buf, &map);
+
+    if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+      GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes (bufsize "
+          "%lu) on stream with stream type %lu, flow identifier %lu, payload "
+          "type %u, sequence number %u, timestamp %u, and ssrc %u. %u CSRCs "
+          "present. Padding %spresent. Extension %spresent", payload_length,
+          gst_buffer_get_size (buf), uni_stream_type, flow_id, pt, seq_num,
+          timestamp, ssrc, cc, (padding)?(""):("not "),
+          (extension_present)?(""):("not "));
+    } else {
+      GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes (bufsize "
+          "%lu) on %s, flow identifier %lu, payload type %u, sequence number "
+          "%u, timestamp %u, and ssrc %u. %u CSRCs present. Padding %spresent. "
+          "Extension %spresent", payload_length, gst_buffer_get_size (buf),
+          (roqmux->use_datagrams)?("datagram"):("stream"), flow_id, pt, seq_num,
+          timestamp, ssrc, cc, (padding)?(""):("not "),
+          (extension_present)?(""):("not "));
+    }
+  }
+
   rv = gst_pad_push (target_pad, buf);
+
+  gst_object_unref (target_pad);
 
   if (!roqmux->use_datagrams &&
       roqmux->stream_boundary == STREAM_BOUNDARY_FRAME &&
@@ -964,12 +1122,55 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         "End of frame, exceeding limit of %d, closing stream",
         roqmux->stream_packing_ratio);
     g_mutex_lock (&stream->mutex);
-    gst_pad_set_active (stream->stream_pad, FALSE);
-    /* Force unlink? */
-    gst_element_remove_pad (GST_ELEMENT (roqmux), stream->stream_pad);
-    stream->stream_pad = NULL;
+    if (stream->stream_pad) {
+      gst_pad_set_active (stream->stream_pad, FALSE);
+      /* Force unlink? */
+      g_hash_table_remove (roqmux->src_pads, (gpointer) stream->stream_pad);
+      gst_element_remove_pad (GST_ELEMENT (roqmux), stream->stream_pad);
+      stream->stream_pad = NULL;
+    }
     stream->counter = 0;
     g_mutex_unlock (&stream->mutex);
+  }
+
+  if (rv == GST_FLOW_QUIC_STREAM_CLOSED) {
+    /*
+     * According to rtp-over-quic-09:
+     *
+     ** STOP_SENDING is not a request to the sender to stop sending RTP media,
+     ** only an indication that a RoQ receiver stopped reading the QUIC stream
+     ** being used. This can mean that the RoQ receiver is unable to make use of
+     ** the media frames being received because they are "too old" to be used. A
+     ** sender with additional media frames to send can continue sending them on
+     ** another QUIC stream. Alternatively, new media frames can be sent as QUIC
+     ** datagrams (see Section 5.3). In either case, a RoQ sender resuming 
+     ** operation after receiving STOP_SENDING can continue starting with the
+     ** newest media frames available for sending. This allows a RoQ receiver to
+     ** "fast forward" to media frames that are "new enough" to be used.
+     **
+     ** Any media frame that has already been sent on the QUIC stream that
+     ** received the STOP_SENDING frame, MUST NOT be sent again on the new QUIC
+     ** stream(s) or DATAGRAMs.
+     */
+
+    g_assert (!roqmux->use_datagrams);
+
+    GST_DEBUG_OBJECT (roqmux, "Stream closed, cancelling frame");
+
+    g_mutex_lock (&stream->mutex);
+    stream->frame_cancelled = TRUE;
+    if (stream->stream_pad) {
+      g_hash_table_remove (roqmux->src_pads, (gpointer) stream->stream_pad);
+      gst_element_remove_pad (GST_ELEMENT (roqmux), stream->stream_pad);
+      stream->stream_pad = NULL;
+    }
+    stream->counter = 0;
+    g_mutex_unlock (&stream->mutex);
+
+    rv = GST_FLOW_OK;
+  } else if (rv == GST_FLOW_QUIC_BLOCKED) {
+    GST_FIXME_OBJECT (roqmux,
+        "What to do when the QUIC connection/stream is blocked?");
   }
 
   GST_DEBUG_OBJECT (roqmux, "Returning %s",
@@ -983,16 +1184,94 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 static GstFlowReturn
 gst_rtp_quic_mux_rtcp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 {
-  /*GstRtpQuicMux *roqmux;*/
+  GstRtpQuicMux *roqmux;
   GstPad *target_pad = NULL;
 
-  /*roqmux = GST_RTPQUICMUX (parent);*/
+  roqmux = GST_RTPQUICMUX (parent);
+
+  if (roqmux->use_datagrams) {
+    if (roqmux->datagram_pad == NULL) {
+      _rtp_quic_mux_open_datagram_pad (roqmux);
+    }
+
+    target_pad = gst_object_ref (roqmux->datagram_pad);
+
+    rtp_quic_mux_write_payload_header (roqmux, &buf, TRUE, TRUE, FALSE);
+
+    GST_DEBUG_OBJECT (roqmux, "Pushing buffer of length %lu in a datagram",
+        gst_buffer_get_size (buf));
+  } else {
+    if (!g_hash_table_lookup_extended (roqmux->rtcp_pads, (gconstpointer) pad,
+        NULL, (gpointer *) &target_pad)) {
+      GST_DEBUG_OBJECT (roqmux, "Opening new RTCP stream for RTCP pad %"
+          GST_PTR_FORMAT, pad);
+      
+      target_pad = rtp_quic_mux_new_uni_src_pad (roqmux, pad);
+
+      if (target_pad == NULL) {
+        GST_ERROR_OBJECT (roqmux,
+            "Couldn't open new unidirectional stream for RTCP");
+        return GST_FLOW_NOT_LINKED;
+      }
+
+      g_hash_table_insert (roqmux->rtcp_pads, (gpointer) pad,
+          (gpointer) target_pad);
+
+      rtp_quic_mux_write_payload_header (roqmux, &buf, TRUE, TRUE,
+          roqmux->add_uni_stream_header);
+    }
+  }
 
   /*
    * TODO: Filter out RTCP messages that are duplicated by QUIC transport
    */
 
+  if (gst_debug_category_get_threshold (gst_rtp_quic_mux_debug)
+      >= GST_LEVEL_DEBUG) {
+    GstMapInfo map;
+    gsize off = 0;
+    guint64 uni_stream_type;
+    guint64 flow_id;
+    guint8 rc;
+    guint8 pt;
+    guint16 length;
+    guint32 ssrc;
+
+    gst_buffer_map (buf, &map, GST_MAP_READ);
+    if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+      off += gst_quiclib_get_varint (map.data + off, &uni_stream_type);
+    }
+    off += gst_quiclib_get_varint (map.data + off, &flow_id);
+    rc = map.data[off] & 0x1f;
+    pt = map.data[off + 1];
+    length = (map.data[off + 2] << 8) + (map.data[off + 3]);
+    ssrc = (map.data[off + 4] << 24) + (map.data[off + 5] << 16) +
+      (map.data[off+6] << 8) + (map.data[off+7]);
+    gst_buffer_unmap (buf, &map);
+
+    if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+      GST_DEBUG_OBJECT (roqmux, "Sending RTCP frame of size %lu bytes on "
+          "stream with stream type %lu, flow identifier %lu, record count %u, "
+          "payload type %u, length %u and ssrc %u",
+          gst_buffer_get_size (buf), uni_stream_type, flow_id, rc, pt, length,
+          ssrc);
+    } else {
+      GST_DEBUG_OBJECT (roqmux, "Sending RTCP frame of size %lu bytes on "
+          "%s, flow identifier %lu, record count %u, payload type %u, length "
+          "%u and ssrc %u", gst_buffer_get_size (buf),
+          (roqmux->use_datagrams)?("datagram"):("stream"), flow_id, rc, pt,
+          length, ssrc);
+    }
+  }
+
   return gst_pad_push (target_pad, buf);
+}
+
+void rtp_quic_mux_remove_rtcp_pad (GstPad *pad)
+{
+  GstRtpQuicMux *roqmux = GST_RTPQUICMUX (GST_PAD_PARENT (pad));
+
+  gst_element_remove_pad (GST_ELEMENT (roqmux), pad);
 }
 
 void
@@ -1001,6 +1280,7 @@ rtp_quic_mux_unlink_pad (gpointer data)
   GstPad *local = GST_PAD (data);
   GstElement *parent = gst_pad_get_parent_element (local);
 
+  g_hash_table_remove (GST_RTPQUICMUX (parent)->src_pads, (gpointer) local);
   gst_element_remove_pad (parent, local);
 }
 
