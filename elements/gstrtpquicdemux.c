@@ -911,24 +911,49 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
     if (stream->buf == NULL) {
       GstMapInfo map;
-      guint64 flowid;
+      
       gsize varint_len = 0;
+
+      GST_TRACE_OBJECT (roqdemux, "Buffer has offset %lu, meta has offset %lu, "
+          "stream has offset %lu", buf->offset, stream_meta->offset,
+          stream->offset);
 
       gst_buffer_map (buf, &map, GST_MAP_READ);
 
-      if (roqdemux->match_uni_stream_type) {
-        guint64 uni_stream_type;
+      if (stream_meta->offset == 0) {
+        guint64 flowid;
 
-        varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
+        if (roqdemux->match_uni_stream_type) {
+          guint64 uni_stream_type;
 
-        if (uni_stream_type != roqdemux->uni_stream_type) {
-          GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %lu "
-              "received doesn't match expected stream type %lu",
-              uni_stream_type, roqdemux->uni_stream_type);
+          varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
+
+          if (uni_stream_type != roqdemux->uni_stream_type) {
+            GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %lu "
+                "received doesn't match expected stream type %lu",
+                uni_stream_type, roqdemux->uni_stream_type);
+            gst_buffer_unmap (buf, &map);
+            return GST_FLOW_ERROR;
+          }
+        }
+        varint_len += gst_quiclib_get_varint (map.data + varint_len, &flowid);
+
+        if (roqdemux->rtp_flow_id == -1) {
+          roqdemux->rtp_flow_id = flowid;
+          if (roqdemux->rtcp_flow_id == -1) {
+            roqdemux->rtcp_flow_id = flowid + 1;
+          }
+        }
+
+        if ((flowid != roqdemux->rtp_flow_id) &&
+            (flowid != roqdemux->rtcp_flow_id)) {
+          GST_ERROR_OBJECT (roqdemux, "Flow ID %lu does not match expected RTP "
+              "flow ID %lu or RTCP flow ID %lu", flowid, roqdemux->rtp_flow_id,
+              roqdemux->rtcp_flow_id);
+          gst_buffer_unmap (buf, &map);
           return GST_FLOW_ERROR;
         }
       }
-      varint_len += gst_quiclib_get_varint (map.data + varint_len, &flowid);
       varint_len += gst_quiclib_get_varint (map.data + varint_len,
           &stream->expected_payloadlen);
 

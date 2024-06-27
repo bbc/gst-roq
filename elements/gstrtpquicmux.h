@@ -78,6 +78,7 @@ struct _RtpQuicMuxStream
 {
   GstPad *stream_pad;
 
+  guint64 stream_offset;
   guint counter;
   gboolean frame_cancelled;
 

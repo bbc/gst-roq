@@ -951,7 +951,6 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     gchar *padcapsdbg;
     GList *list;
     guint i;
-    gboolean first = FALSE;
 
     padcaps = gst_pad_get_current_caps (pad);
 
@@ -1011,8 +1010,6 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       }
 
       g_assert (g_hash_table_insert (pts, pt_ptr, stream));
-
-      first = TRUE;
     }
 
     g_mutex_lock (&stream->mutex);
@@ -1032,16 +1029,17 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       stream->stream_pad = rtp_quic_mux_new_uni_src_pad (roqmux, pad);
       g_hash_table_insert (roqmux->src_pads, (gpointer) stream->stream_pad,
           (gpointer) stream);
-      first = TRUE;
+      stream->stream_offset = 0;
     }
 
-    rtp_quic_mux_write_payload_header (roqmux, &buf, FALSE, first,
-        roqmux->add_uni_stream_header);
+    rtp_quic_mux_write_payload_header (roqmux, &buf, FALSE,
+        (stream->stream_offset == 0), roqmux->add_uni_stream_header);
 
     GST_TRACE_OBJECT (roqmux, "Stream boundary %s, stream packing ratio %u, "
-        "stream counter %u, buffer flag marker %s, buffer flag delta unit %s",
+        "stream counter %u, stream offset %lu, buffer flag marker %s, "
+        "buffer flag delta unit %s",
         _rtp_quic_mux_stream_boundary_as_string (roqmux->stream_boundary),
-         roqmux->stream_packing_ratio, stream->counter,
+         roqmux->stream_packing_ratio, stream->counter, stream->stream_offset,
         (GST_BUFFER_FLAGS (buf) & GST_BUFFER_FLAG_MARKER)?("set"):("not set"),
         (GST_BUFFER_FLAGS (buf) & GST_BUFFER_FLAG_DELTA_UNIT)?("set"):("not set"));
 
@@ -1064,6 +1062,9 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     }
 
     target_pad = gst_object_ref (stream->stream_pad);
+
+    buf->offset = stream->stream_offset;
+    stream->stream_offset += gst_buffer_get_size (buf);
 
     /* Hold until the end to stop the pad going way while we're using it */
     g_mutex_unlock (&stream->mutex);
@@ -1105,10 +1106,12 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     guint32 ssrc;
 
     gst_buffer_map (buf, &map, GST_MAP_READ);
-    if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
-      off += gst_quiclib_get_varint (map.data + off, &uni_stream_type);
+    if (buf->offset == 0) {
+      if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+        off += gst_quiclib_get_varint (map.data + off, &uni_stream_type);
+      }
+      off += gst_quiclib_get_varint (map.data + off, &flow_id);
     }
-    off += gst_quiclib_get_varint (map.data + off, &flow_id);
     off += gst_quiclib_get_varint (map.data + off, &payload_length);
     padding = (map.data[off] & 0x20) > 0;
     extension_present = (map.data[off] & 0x10) > 0;
@@ -1121,20 +1124,31 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       (map.data[off + 10] << 8) + (map.data[off + 11]);
     gst_buffer_unmap (buf, &map);
 
-    if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
-      GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes (bufsize "
-          "%lu) on stream with stream type %lu, flow identifier %lu, payload "
-          "type %u, sequence number %u, timestamp %u, and ssrc %u. %u CSRCs "
-          "present. Padding %spresent. Extension %spresent", payload_length,
-          gst_buffer_get_size (buf), uni_stream_type, flow_id, pt, seq_num,
-          timestamp, ssrc, cc, (padding)?(""):("not "),
-          (extension_present)?(""):("not "));
+    if (buf->offset == 0) {
+      if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+        GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes "
+            "(bufsize %lu) on stream with stream type %lu, flow identifier %lu,"
+            " payload type %u, sequence number %u, timestamp %u, and ssrc %u. "
+            "%u CSRCs present. Padding %spresent. Extension %spresent",
+            payload_length, gst_buffer_get_size (buf), uni_stream_type, flow_id,
+            pt, seq_num, timestamp, ssrc, cc, (padding)?(""):("not "),
+            (extension_present)?(""):("not "));
+      } else {
+        GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes "
+            "(bufsize %lu) on %s, flow identifier %lu, payload type %u, "
+            "sequence number %u, timestamp %u, and ssrc %u. %u CSRCs present. "
+            "Padding %spresent. Extension %spresent", payload_length,
+            gst_buffer_get_size (buf),
+            (roqmux->use_datagrams)?("datagram"):("stream"), flow_id, pt, seq_num,
+            timestamp, ssrc, cc, (padding)?(""):("not "),
+            (extension_present)?(""):("not "));
+      }
     } else {
       GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes (bufsize "
-          "%lu) on %s, flow identifier %lu, payload type %u, sequence number "
-          "%u, timestamp %u, and ssrc %u. %u CSRCs present. Padding %spresent. "
+          "%lu) on %s, payload type %u, sequence number %u, timestamp %u, "
+          "and ssrc %u. %u CSRCs present. Padding %spresent. "
           "Extension %spresent", payload_length, gst_buffer_get_size (buf),
-          (roqmux->use_datagrams)?("datagram"):("stream"), flow_id, pt, seq_num,
+          (roqmux->use_datagrams)?("datagram"):("stream"), pt, seq_num,
           timestamp, ssrc, cc, (padding)?(""):("not "),
           (extension_present)?(""):("not "));
     }
