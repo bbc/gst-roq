@@ -576,8 +576,6 @@ gst_rtp_quic_mux_sink_event (GstPad * pad, GstObject * parent,
       break;
   }
 
-  gst_event_unref (event);
-
   return ret;
 }
 
