@@ -345,9 +345,15 @@ gst_rtp_quic_demux_set_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_RTP_FLOW_ID:
       roqdemux->rtp_flow_id = g_value_get_int64 (value);
+      if (roqdemux->rtp_flow_id != -1 && roqdemux->rtcp_flow_id == -1) {
+        g_object_set (object, "rtcp-flow-id", roqdemux->rtp_flow_id + 1, NULL);
+      }
       break;
     case PROP_RTCP_FLOW_ID:
       roqdemux->rtcp_flow_id = g_value_get_int64 (value);
+      if (roqdemux->rtcp_flow_id == -1 && roqdemux->rtp_flow_id != -1) {
+        roqdemux->rtcp_flow_id = roqdemux->rtp_flow_id + 1;
+      }
       break;
     case PROP_UNI_STREAM_TYPE:
       roqdemux->uni_stream_type = g_value_get_uint64 (value);
@@ -939,10 +945,7 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         varint_len += gst_quiclib_get_varint (map.data + varint_len, &flowid);
 
         if (roqdemux->rtp_flow_id == -1) {
-          roqdemux->rtp_flow_id = flowid;
-          if (roqdemux->rtcp_flow_id == -1) {
-            roqdemux->rtcp_flow_id = flowid + 1;
-          }
+          g_object_set (G_OBJECT (roqdemux), "rtp-flow-id", flowid, NULL);
         }
 
         if ((flowid != roqdemux->rtp_flow_id) &&
@@ -1141,9 +1144,6 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
               * case other objects/apps are looking for the flow ID changing.
               */
             g_object_set (roqdemux, "rtp-flow-id", flow_id, NULL);
-            if (roqdemux->rtcp_flow_id == -1) {
-              g_object_set (roqdemux, "rtcp-flow-id", flow_id + 1, NULL);
-            }
           }
           if (flow_id == roqdemux->rtp_flow_id &&
               roqdemux->rtp_flow_id != roqdemux->rtcp_flow_id) {
