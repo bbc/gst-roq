@@ -682,58 +682,38 @@ rtp_quic_mux_print_buffer (GstRtpQuicMux *mux, GstBuffer *buf)
 #endif
 
 gboolean
-rtp_quic_mux_write_payload_header (GstRtpQuicMux *roqmux, GstBuffer **buf,
-    gboolean rtcp, gboolean add_flow_id, gboolean add_stream_header)
+rtp_quic_mux_write_payload_header (GstBuffer **buf, gint64 stream_type,
+    gint64 flow_id, gboolean length)
 {
   gsize buf_len, varlen_len = 0;
   GstMemory *mem;
   GstMapInfo map;
-  guint64 flow_id;
 
   buf_len = gst_buffer_get_size (*buf);
 
-  if (add_flow_id) {
-    if (add_stream_header) {
-      varlen_len = gst_quiclib_set_varint (roqmux->uni_stream_type, NULL);
-    }
-    if (rtcp) {
-      if (roqmux->rtcp_flow_id == -1) {
-        flow_id = roqmux->rtp_flow_id + 1;
-      } else {
-        flow_id = roqmux->rtcp_flow_id;
-      }
-    } else {
-      flow_id = roqmux->rtp_flow_id;
-    }
-    varlen_len += gst_quiclib_set_varint (flow_id, NULL);
+  if (stream_type >= 0) {
+    varlen_len += gst_quiclib_set_varint ((guint64) stream_type, NULL);
   }
-  varlen_len += gst_quiclib_set_varint (buf_len, NULL);
+  if (flow_id >= 0) {
+    varlen_len += gst_quiclib_set_varint ((guint64) flow_id, NULL);
+  }
+  if (length) {
+    varlen_len += gst_quiclib_set_varint (buf_len, NULL);
+  }
 
   mem = gst_allocator_alloc (NULL, varlen_len, NULL);
   gst_memory_map (mem, &map, GST_MAP_WRITE);
 
   varlen_len = 0;
-  if (add_flow_id) {
-    if (add_stream_header) {
-      varlen_len = gst_quiclib_set_varint (roqmux->uni_stream_type, map.data);
-    }
-    varlen_len += gst_quiclib_set_varint (flow_id, map.data + varlen_len);
-  }
-  varlen_len += gst_quiclib_set_varint (buf_len, map.data + varlen_len);
 
-  if (add_flow_id) {
-    if (add_stream_header) {
-      GST_TRACE_OBJECT (roqmux, "Written stream type header %lu, flow ID %lu "
-          "and payload length %lu in %lu byte header", roqmux->uni_stream_type,
-          flow_id, buf_len, varlen_len);
-    } else {
-      GST_TRACE_OBJECT (roqmux,
-          "Written flow ID %lu and payload length %lu in %lu byte header",
-          flow_id, buf_len, varlen_len);
-    }
-  } else {
-    GST_TRACE_OBJECT (roqmux, "Written payload length %lu in %lu byte header",
-        buf_len, varlen_len);
+  if (stream_type >=0) {
+    varlen_len += gst_quiclib_set_varint ((guint64) stream_type, map.data);
+  }
+  if (flow_id >= 0) {
+    varlen_len += gst_quiclib_set_varint ((guint64) flow_id, map.data);
+  }
+  if (length) {
+    varlen_len += gst_quiclib_set_varint (buf_len, map.data);
   }
 
   gst_memory_unmap (mem, &map);
@@ -910,9 +890,10 @@ rtp_quic_mux_flow_return_as_string (GstFlowReturn fr)
 }
 
 static gboolean
-_rtp_quic_mux_open_datagram_pad (GstRtpQuicMux *roqmux)
+_rtp_quic_mux_open_datagram_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
 {
   gchar *padname;
+  gboolean rv;
 
   padname = g_strdup_printf (quic_datagram_src_factory.name_template,
       0);
@@ -925,7 +906,14 @@ _rtp_quic_mux_open_datagram_pad (GstRtpQuicMux *roqmux)
   g_free (padname);
 
   gst_pad_set_active (roqmux->datagram_pad, TRUE);
-  return gst_element_add_pad (GST_ELEMENT (roqmux), roqmux->datagram_pad);
+  rv = gst_element_add_pad (GST_ELEMENT (roqmux), roqmux->datagram_pad);
+
+  if (!rv) return FALSE;
+
+  gst_pad_sticky_events_foreach (sinkpad, rtp_quic_mux_foreach_sticky_event,
+      (gpointer) roqmux->datagram_pad);
+
+  return rv;
 }
 
 static GstFlowReturn
@@ -1030,8 +1018,9 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       stream->stream_offset = 0;
     }
 
-    rtp_quic_mux_write_payload_header (roqmux, &buf, FALSE,
-        (stream->stream_offset == 0), roqmux->add_uni_stream_header);
+    rtp_quic_mux_write_payload_header (&buf,
+        (roqmux->add_uni_stream_header)?(roqmux->uni_stream_type):(-1),
+        (stream->stream_offset == 0)?(roqmux->rtp_flow_id):(-1), TRUE);
 
     GST_TRACE_OBJECT (roqmux, "Stream boundary %s, stream packing ratio %u, "
         "stream counter %u, stream offset %lu, buffer flag marker %s, "
@@ -1072,12 +1061,12 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         gst_buffer_get_size (buf));
   } else {
     if (roqmux->datagram_pad == NULL) {
-      _rtp_quic_mux_open_datagram_pad (roqmux);
+      _rtp_quic_mux_open_datagram_pad (roqmux, pad);
     }
 
     target_pad = gst_object_ref (roqmux->datagram_pad);
 
-    rtp_quic_mux_write_payload_header (roqmux, &buf, FALSE, TRUE, FALSE);
+    rtp_quic_mux_write_payload_header (&buf, -1, roqmux->rtp_flow_id, FALSE);
 
     GST_DEBUG_OBJECT (roqmux, "Pushing buffer of length %lu in a datagram",
         gst_buffer_get_size (buf));
@@ -1104,13 +1093,19 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     guint32 ssrc;
 
     gst_buffer_map (buf, &map, GST_MAP_READ);
-    if (buf->offset == 0) {
-      if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
-        off += gst_quiclib_get_varint (map.data + off, &uni_stream_type);
+    if (!roqmux->use_datagrams) {
+      if (buf->offset == 0) {
+        if (roqmux->add_uni_stream_header) {
+          off += gst_quiclib_get_varint (map.data + off, &uni_stream_type);
+        }
+        off += gst_quiclib_get_varint (map.data + off, &flow_id);
       }
+      off += gst_quiclib_get_varint (map.data + off, &payload_length);
+    } else {
+      /* Datagram */
       off += gst_quiclib_get_varint (map.data + off, &flow_id);
+      payload_length = gst_buffer_get_size (buf) - off;
     }
-    off += gst_quiclib_get_varint (map.data + off, &payload_length);
     padding = (map.data[off] & 0x20) > 0;
     extension_present = (map.data[off] & 0x10) > 0;
     cc = map.data[off] & 0x0f;
@@ -1122,8 +1117,16 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       (map.data[off + 10] << 8) + (map.data[off + 11]);
     gst_buffer_unmap (buf, &map);
 
-    if (buf->offset == 0) {
-      if (!roqmux->use_datagrams && roqmux->add_uni_stream_header) {
+    if (roqmux->use_datagrams) {
+      GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes "
+          "(bufsize %lu) on datagram with flow identifier %lu, "
+          "payload type %u, sequence number %u, timestamp %u, and ssrc %u. "
+          "%u CSRCs present. Padding %spresent. Extension %spresent",
+          payload_length, gst_buffer_get_size (buf), flow_id, pt, seq_num,
+          timestamp, ssrc, cc, (padding)?(""):("not "),
+          (extension_present)?(""):("not "));
+    } else if (buf->offset == 0) {
+      if (roqmux->add_uni_stream_header) {
         GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes "
             "(bufsize %lu) on stream with stream type %lu, flow identifier %lu,"
             " payload type %u, sequence number %u, timestamp %u, and ssrc %u. "
@@ -1133,24 +1136,25 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
             (extension_present)?(""):("not "));
       } else {
         GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes "
-            "(bufsize %lu) on %s, flow identifier %lu, payload type %u, "
+            "(bufsize %lu) on stream, flow identifier %lu, payload type %u, "
             "sequence number %u, timestamp %u, and ssrc %u. %u CSRCs present. "
             "Padding %spresent. Extension %spresent", payload_length,
-            gst_buffer_get_size (buf),
-            (roqmux->use_datagrams)?("datagram"):("stream"), flow_id, pt, seq_num,
-            timestamp, ssrc, cc, (padding)?(""):("not "),
-            (extension_present)?(""):("not "));
+            gst_buffer_get_size (buf), flow_id, pt, seq_num, timestamp, ssrc,
+            cc, (padding)?(""):("not "), (extension_present)?(""):("not "));
       }
     } else {
       GST_DEBUG_OBJECT (roqmux, "Sending RTP frame of size %lu bytes (bufsize "
-          "%lu) on %s, payload type %u, sequence number %u, timestamp %u, "
+          "%lu) on stream, payload type %u, sequence number %u, timestamp %u, "
           "and ssrc %u. %u CSRCs present. Padding %spresent. "
           "Extension %spresent", payload_length, gst_buffer_get_size (buf),
-          (roqmux->use_datagrams)?("datagram"):("stream"), pt, seq_num,
-          timestamp, ssrc, cc, (padding)?(""):("not "),
+          pt, seq_num, timestamp, ssrc, cc, (padding)?(""):("not "),
           (extension_present)?(""):("not "));
     }
   }
+
+
+  GST_DEBUG_OBJECT (roqmux, "Pushing buffer %p (size %lu) on pad %"
+      GST_PTR_FORMAT, buf, gst_buffer_get_size (buf), target_pad);
 
   rv = gst_pad_push (target_pad, buf);
 
@@ -1230,14 +1234,18 @@ gst_rtp_quic_mux_rtcp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
   roqmux = GST_RTPQUICMUX (parent);
 
+  if (roqmux->rtcp_flow_id == -1) {
+    roqmux->rtcp_flow_id = roqmux->rtp_flow_id + 1;
+  }
+
   if (roqmux->use_datagrams) {
     if (roqmux->datagram_pad == NULL) {
-      _rtp_quic_mux_open_datagram_pad (roqmux);
+      _rtp_quic_mux_open_datagram_pad (roqmux, pad);
     }
 
     target_pad = gst_object_ref (roqmux->datagram_pad);
 
-    rtp_quic_mux_write_payload_header (roqmux, &buf, TRUE, TRUE, FALSE);
+    rtp_quic_mux_write_payload_header (&buf, -1, roqmux->rtcp_flow_id, FALSE);
 
     GST_DEBUG_OBJECT (roqmux, "Pushing buffer of length %lu in a datagram",
         gst_buffer_get_size (buf));
@@ -1258,8 +1266,11 @@ gst_rtp_quic_mux_rtcp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       g_hash_table_insert (roqmux->rtcp_pads, (gpointer) pad,
           (gpointer) target_pad);
 
-      rtp_quic_mux_write_payload_header (roqmux, &buf, TRUE, TRUE,
-          roqmux->add_uni_stream_header);
+      rtp_quic_mux_write_payload_header (&buf,
+          (roqmux->add_uni_stream_header)?(roqmux->uni_stream_type):(-1),
+          roqmux->rtcp_flow_id, TRUE);
+    } else {
+      rtp_quic_mux_write_payload_header (&buf, -1, -1, TRUE);
     }
   }
 

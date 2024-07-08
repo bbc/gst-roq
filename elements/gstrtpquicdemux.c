@@ -735,7 +735,7 @@ rtp_quic_demux_get_rtp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc,
 
     g_free (padname);
 
-    GST_TRACE_OBJECT (roqdemux, "Adding src pad %" GST_PTR_FORMAT 
+    GST_DEBUG_OBJECT (roqdemux, "Adding src pad %" GST_PTR_FORMAT 
         " for payload type %u, SSRC %u, RTP flow ID %lu", src->src, pt, ssrc,
         roqdemux->rtp_flow_id);
     gst_element_add_pad (GST_ELEMENT (roqdemux), src->src);
@@ -790,7 +790,7 @@ rtp_quic_demux_get_rtcp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc)
 
       g_free (padname);
 
-      GST_TRACE_OBJECT (roqdemux, "Adding src pad %" GST_PTR_FORMAT 
+      GST_DEBUG_OBJECT (roqdemux, "Adding src pad %" GST_PTR_FORMAT 
           " for SSRC %u, RTP flow ID %lu", rv, ssrc, roqdemux->rtcp_flow_id);
       gst_element_add_pad (GST_ELEMENT (roqdemux), rv);
 
@@ -822,11 +822,11 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
       roqdemux->rtp_flow_id != roqdemux->rtcp_flow_id) {
     srcpad = rtp_quic_demux_get_rtp_src_pad (roqdemux, ssrc, pt, offset);
   } else if (flow_id == roqdemux->rtcp_flow_id ||
-      (roqdemux->rtcp_flow_id == -1 &&
+      (roqdemux->rtcp_flow_id == -1 && roqdemux->rtp_flow_id != -1 &&
         flow_id == roqdemux->rtp_flow_id + 1)) {
     srcpad = rtp_quic_demux_get_rtcp_src_pad (roqdemux, ssrc);
   } else if (roqdemux->rtp_flow_id == roqdemux->rtcp_flow_id) {
-      if ((pt & 0x7f) >= 64 || (pt & 0x7f) <= 95) {
+      if ((pt & 0x7f) >= 64 && (pt & 0x7f) <= 95) {
       /* RFC 5761 - Probably RTCP */
       srcpad = rtp_quic_demux_get_rtcp_src_pad (roqdemux, ssrc);
     } else {
@@ -852,16 +852,16 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
       peer_parent = gst_pad_get_parent_element (peer);
       parent_name = gst_element_get_name (peer_parent);
 
-      GST_DEBUG_OBJECT (roqdemux, "Added new RT%sP src pad for flow ID %lu, "
+      GST_DEBUG_OBJECT (roqdemux, "Mapped RT%sP src pad for flow ID %lu, "
           "SSRC %u, PT %u with padname %s linked to element %s",
-          (pt > 127)?(""):("C"), flow_id, ssrc, pt, GST_PAD_NAME (srcpad),
+          (pt > 127)?("C"):(""), flow_id, ssrc, pt, GST_PAD_NAME (srcpad),
           parent_name);
       g_free (parent_name);
       gst_object_unref (peer_parent);
     } else {
       GstGhostPad *gpad = GST_GHOST_PAD (gst_pad_get_parent (peer));
 
-      GST_DEBUG_OBJECT (roqdemux, "Added new RT%sP src pad for flow ID %lu, "
+      GST_DEBUG_OBJECT (roqdemux, "Mapped RT%sP src pad for flow ID %lu, "
           "SSRC %u, PT %u with padname %s linked to ghost pad %p",
           (pt > 127)?(""):("C"), flow_id, ssrc, pt, GST_PAD_NAME (srcpad),
           gpad);
@@ -884,6 +884,7 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   RtpQuicDemuxStream *stream = NULL;
   GstQuicLibDatagramMeta *datagram_meta = NULL;
   GstPad *target_pad = NULL;
+  GstEvent *segment_event;
   GstFlowReturn rv;
 
   roqdemux = GST_RTPQUICDEMUX (parent);
@@ -1027,10 +1028,16 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     off = gst_quiclib_get_varint (map.data, &flow_id);
     payload_type = (guint32) map.data[off + 1];
 
+    gst_buffer_unmap (buf, &map);
+
     ssrc = ntohl (ssrc);
 
     target_pad = rtp_quic_demux_get_src_pad (roqdemux, flow_id, ssrc,
         payload_type, &roqdemux->dg_offset);
+
+    buf = gst_buffer_make_writable (buf);
+
+    gst_buffer_resize (buf, off, -1);
 
     if (flow_id == roqdemux->rtp_flow_id) { /* RTP */
       memcpy (&ssrc, map.data + off + 4, 4);
@@ -1042,6 +1049,16 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
     buf->pts += roqdemux->dg_offset;
     buf->dts += roqdemux->dg_offset;
+  }
+
+  segment_event = gst_pad_get_sticky_event (target_pad, GST_EVENT_SEGMENT, 0);
+  if (segment_event == NULL) {
+    GstSegment *segment = g_new0 (GstSegment, 1);
+    gst_segment_init (segment, GST_FORMAT_TIME);
+    segment_event = gst_event_new_segment (segment);
+    gst_pad_push_event (target_pad, segment_event);
+  } else {
+    gst_event_unref (segment_event);
   }
 
   g_assert (target_pad);
@@ -1161,10 +1178,10 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
               memcpy (&ssrc, map.data + varint_size + 4, 4);
             }
           } else {
-            GST_WARNING_OBJECT (roqdemux,
-                "Cannot discern if this packet is RTP or RTCP! "
-                "Flow ID: %lu, configured RTP flow ID %ld, RTCP flow ID %ld",
-                flow_id, roqdemux->rtp_flow_id, roqdemux->rtcp_flow_id);
+            GST_DEBUG_OBJECT (roqdemux,
+                "Flow ID %lu doesn't match configured RTP flow ID %ld or "
+                "RTCP flow ID %ld", flow_id, roqdemux->rtp_flow_id,
+                roqdemux->rtcp_flow_id);
             gst_buffer_unmap (peek, &map);
             return FALSE;
           }
@@ -1257,6 +1274,7 @@ gst_rtp_quic_demux_request_new_pad (GstElement *element, GstPadTemplate *templ,
 {
   GstRtpQuicDemux *roqdemux = GST_RTPQUICDEMUX (element);
   GstPad *rv;
+  GstCaps *test_caps;
 
   rv = gst_pad_new_from_template (templ, NULL);
 
@@ -1276,6 +1294,20 @@ gst_rtp_quic_demux_request_new_pad (GstElement *element, GstPadTemplate *templ,
         rv);
   }
 
+  test_caps = gst_caps_new_empty_simple (QUICLIB_UNI_STREAM_CAP);
+  if (gst_caps_can_intersect (templ->caps, test_caps)) {
+    GST_TRACE_OBJECT (roqdemux, "Unidirectional stream pad requested");
+  } else {
+    gst_caps_unref (test_caps);
+    test_caps = gst_caps_new_empty_simple (QUICLIB_DATAGRAM_CAP);
+    if (gst_caps_can_intersect (templ->caps, test_caps)) {
+      GST_TRACE_OBJECT (roqdemux, "Datagram pad requested");
+    } else {
+      GST_ERROR_OBJECT (roqdemux, "Unknown pad template requested! Caps %"
+          GST_PTR_FORMAT, templ->caps);
+    }
+  }
+
   GST_TRACE_OBJECT (roqdemux, "Adding %s pad %" GST_PTR_FORMAT 
       " from template %" GST_PTR_FORMAT " with name \"%s\" and caps %"
       GST_PTR_FORMAT, (rv->direction == GST_PAD_SINK)?("sink"):("src"), rv,
@@ -1293,11 +1325,48 @@ static void gst_rtp_quic_demux_release_pad (GstElement *element, GstPad *pad)
 void rtp_quic_demux_pad_linked (GstPad *self, GstPad *peer,
     gpointer user_data)
 {
+  GstQuery *query;
+  guint64 stream_id;
   GstRtpQuicDemux *roqdemux = GST_RTPQUICDEMUX (gst_pad_get_parent (self));
   gchar *peer_elem = gst_element_get_name (gst_pad_get_parent (peer));
 
   GST_DEBUG_OBJECT (roqdemux, "Pad %p linked to peer %p (%s)", self, peer,
       peer_elem);
+
+  if (roqdemux->datagram_sink == NULL) {
+    GstCaps *pad_caps, *test_caps;
+
+    pad_caps = gst_pad_get_current_caps (self);
+    if (pad_caps == NULL) {
+      pad_caps = gst_caps_ref (self->padtemplate->caps);
+    }
+    test_caps = gst_caps_new_empty_simple (QUICLIB_DATAGRAM_CAP);
+
+    if (gst_caps_can_intersect (pad_caps, test_caps)) {
+      roqdemux->datagram_sink = gst_object_ref (self);
+    }
+
+    gst_caps_unref (pad_caps);
+    gst_caps_unref (test_caps);
+  }
+
+  if (self != roqdemux->datagram_sink) {
+    query = gst_query_new_get_associated_stream_id (self);
+    if (query) {
+      if (!gst_pad_peer_query (self, query)) {
+        GST_ERROR_OBJECT (roqdemux, "Couldn't send query on pad!");
+      }
+      if (gst_query_parse_get_associated_stream_id (query, &stream_id)) {
+        gint64 *_stream_id = (gint64 *) g_malloc (sizeof (gint64));
+        GST_TRACE_OBJECT (roqdemux, "Pad %p has unidirectional stream ID %lu",
+            self, stream_id);
+        * _stream_id = stream_id;
+
+        g_hash_table_insert (roqdemux->quic_streams, _stream_id, self);
+      }
+      gst_query_unref (query);
+    }
+  }
 
   g_free (peer_elem);
 }
@@ -1307,17 +1376,28 @@ void rtp_quic_demux_pad_unlinked (GstPad *self, GstPad *peer,
 {
   GstRtpQuicDemux *roqdemux = GST_RTPQUICDEMUX (gst_pad_get_parent (self));
   GstCaps *caps = gst_pad_get_current_caps (self);
-  guint64 stream_id;
 
   if (caps) {
-    g_warn_if_fail (gst_structure_get_uint64 (gst_caps_get_structure (caps, 0),
-        QUICLIB_STREAMID_KEY, &stream_id));
+    GstCaps *test_caps = gst_caps_new_empty_simple (QUICLIB_DATAGRAM_CAP);
 
-    GST_TRACE_OBJECT (roqdemux, "Removing SRC pad %p for stream ID %lu", self,
-        stream_id);
+    if (gst_caps_can_intersect (caps, test_caps)) {
+      GST_TRACE_OBJECT (roqdemux, "Removing datagram sink pad");
+      gst_object_unref (roqdemux->datagram_sink);
+      roqdemux->datagram_sink = NULL;
+    } else {
+      guint64 stream_id;
 
-    g_warn_if_fail (g_hash_table_remove (roqdemux->quic_streams, &stream_id));
+      g_warn_if_fail (gst_structure_get_uint64 (
+          gst_caps_get_structure (caps, 0), QUICLIB_STREAMID_KEY, &stream_id));
+
+      GST_TRACE_OBJECT (roqdemux, "Removing SRC pad %p for stream ID %lu", self,
+          stream_id);
+
+      g_warn_if_fail (g_hash_table_remove (roqdemux->quic_streams, &stream_id));
+    }
   }
+
+  gst_caps_unref (caps);
 
   GST_DEBUG_OBJECT (roqdemux, "Pad %p unlinked from peer %p", self, peer);
 }
