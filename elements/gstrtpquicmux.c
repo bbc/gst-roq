@@ -710,10 +710,11 @@ rtp_quic_mux_write_payload_header (GstBuffer **buf, gint64 stream_type,
     varlen_len += gst_quiclib_set_varint ((guint64) stream_type, map.data);
   }
   if (flow_id >= 0) {
-    varlen_len += gst_quiclib_set_varint ((guint64) flow_id, map.data);
+    varlen_len += gst_quiclib_set_varint ((guint64) flow_id,
+        map.data + varlen_len);
   }
   if (length) {
-    varlen_len += gst_quiclib_set_varint (buf_len, map.data);
+    varlen_len += gst_quiclib_set_varint (buf_len, map.data + varlen_len);
   }
 
   gst_memory_unmap (mem, &map);
@@ -1044,6 +1045,7 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         stream->stream_pad = rtp_quic_mux_new_uni_src_pad (roqmux, pad);
         g_hash_table_insert (roqmux->src_pads, (gpointer) stream->stream_pad,
             (gpointer) stream);
+        stream->stream_offset = 0;
         stream->counter = 0;
       }
     }
