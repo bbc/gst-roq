@@ -1357,12 +1357,21 @@ void rtp_quic_demux_pad_linked (GstPad *self, GstPad *peer,
         GST_ERROR_OBJECT (roqdemux, "Couldn't send query on pad!");
       }
       if (gst_query_parse_get_associated_stream_id (query, &stream_id)) {
-        gint64 *_stream_id = (gint64 *) g_malloc (sizeof (gint64));
         GST_TRACE_OBJECT (roqdemux, "Pad %p has unidirectional stream ID %lu",
             self, stream_id);
-        * _stream_id = stream_id;
 
-        g_hash_table_insert (roqdemux->quic_streams, _stream_id, self);
+        if (!g_hash_table_contains (roqdemux->quic_streams, &stream_id)) {
+          RtpQuicDemuxStream *stream = g_object_new (RTPQUICDEMUX_TYPE_STREAM,
+              NULL);
+          gint64 *_stream_id = (gint64 *) g_malloc (sizeof (gint64));
+          *_stream_id = stream_id;
+
+          g_assert (stream);
+
+          GST_TRACE_OBJECT (roqdemux, "Creating new stream object");
+
+          g_hash_table_insert (roqdemux->quic_streams, _stream_id, stream);
+        }
       }
       gst_query_unref (query);
     }
@@ -1395,9 +1404,9 @@ void rtp_quic_demux_pad_unlinked (GstPad *self, GstPad *peer,
 
       g_warn_if_fail (g_hash_table_remove (roqdemux->quic_streams, &stream_id));
     }
-  }
 
-  gst_caps_unref (caps);
+    gst_caps_unref (caps);
+  }
 
   GST_DEBUG_OBJECT (roqdemux, "Pad %p unlinked from peer %p", self, peer);
 }
