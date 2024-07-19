@@ -229,6 +229,7 @@ G_DEFINE_TYPE (GstRtpQuicMux, gst_rtp_quic_mux, GST_TYPE_ELEMENT);
 GST_ELEMENT_REGISTER_DEFINE (rtp_quic_mux, "rtpquicmux", GST_RANK_NONE,
     GST_TYPE_RTPQUICMUX);
 
+static void gst_rtp_quic_mux_finalize (GObject *object);
 static void gst_rtp_quic_mux_set_property (GObject * object,
     guint prop_id, const GValue * value, GParamSpec * pspec);
 static void gst_rtp_quic_mux_get_property (GObject * object,
@@ -263,6 +264,7 @@ gst_rtp_quic_mux_class_init (GstRtpQuicMuxClass * klass)
   gobject_class = (GObjectClass *) klass;
   gstelement_class = (GstElementClass *) klass;
 
+  gobject_class->finalize = GST_DEBUG_FUNCPTR (gst_rtp_quic_mux_finalize);
   gobject_class->set_property =
       GST_DEBUG_FUNCPTR (gst_rtp_quic_mux_set_property);
   gobject_class->get_property =
@@ -319,6 +321,17 @@ gst_rtp_quic_mux_init (GstRtpQuicMux * roqmux)
 
   g_rec_mutex_init (&roqmux->mutex);
   g_cond_init (&roqmux->cond);
+}
+
+static void
+gst_rtp_quic_mux_finalize (GObject *object)
+{
+  GstRtpQuicMux *roqmux = GST_RTPQUICMUX (object);
+
+  if (roqmux->quicmux) {
+    gst_object_unref (roqmux->quicmux);
+    roqmux->quicmux = 0;
+  }
 }
 
 static void
@@ -910,6 +923,11 @@ _rtp_quic_mux_open_datagram_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
   rv = gst_element_add_pad (GST_ELEMENT (roqmux), roqmux->datagram_pad);
 
   if (!rv) return FALSE;
+
+  if (roqmux->quicmux == NULL) {
+    roqmux->quicmux = gst_pad_get_parent_element (
+      GST_PAD_PEER (roqmux->datagram_pad));
+  }
 
   gst_pad_sticky_events_foreach (sinkpad, rtp_quic_mux_foreach_sticky_event,
       (gpointer) roqmux->datagram_pad);
