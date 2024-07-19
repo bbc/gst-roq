@@ -223,6 +223,8 @@ static void gst_rtp_quic_demux_finalise (GObject *object);
 static GstStateChangeReturn gst_rtp_quic_demux_change_state (GstElement *elem,
     GstStateChange t);
 
+static gboolean gst_rtp_quic_demux_element_event (GstElement *element,
+    GstEvent *event);
 static gboolean gst_rtp_quic_demux_src_event (GstPad *pad, GstObject *parent,
     GstEvent *event);
 static gboolean gst_rtp_quic_demux_sink_event (GstPad * pad,
@@ -260,6 +262,7 @@ gst_rtp_quic_demux_class_init (GstRtpQuicDemuxClass * klass)
   gobject_class->get_property = gst_rtp_quic_demux_get_property;
   gobject_class->finalize = gst_rtp_quic_demux_finalise;
 
+  gstelement_class->send_event = gst_rtp_quic_demux_element_event;
   gstelement_class->query = gst_rtp_quic_demux_query;
   gstelement_class->change_state = gst_rtp_quic_demux_change_state;
   gstelement_class->request_new_pad = gst_rtp_quic_demux_request_new_pad;
@@ -442,6 +445,43 @@ gst_rtp_quic_demux_setcaps (GstRtpQuicDemux *roqdemux, GstCaps *caps)
   return TRUE;
 }
 
+void
+_propagate_eos_pt (gpointer key, gpointer value, gpointer user_data)
+{
+  RtpQuicDemuxSrc *src = (RtpQuicDemuxSrc *) value;
+  GstEvent *eos = GST_EVENT (user_data);
+
+  gst_pad_push_event (src->src, eos);
+}
+
+void
+_propagate_eos_ssrc (gpointer key, gpointer value, gpointer user_data)
+{
+  g_hash_table_foreach ((GHashTable *) value, _propagate_eos_pt, user_data);
+}
+
+static gboolean
+gst_rtp_quic_demux_element_event (GstElement *element, GstEvent *event)
+{
+  GstRtpQuicDemux *roqdemux = GST_RTPQUICDEMUX (element);
+
+  GST_LOG_OBJECT (roqdemux, "Received %s event: %" GST_PTR_FORMAT,
+      GST_EVENT_TYPE_NAME (event), event);
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_EOS:
+      gst_event_ref (event);
+      g_hash_table_foreach (roqdemux->src_ssrcs, _propagate_eos_ssrc,
+          (gpointer) event);
+      gst_event_unref (event);
+      return TRUE;
+    default:
+      break;
+  }
+
+  return FALSE;
+}
+
 static gboolean
 gst_rtp_quic_demux_src_event (GstPad *pad, GstObject *parent, GstEvent *event)
 {
@@ -569,9 +609,6 @@ gst_rtp_quic_demux_sink_event (GstPad * pad, GstObject * parent,
 
       break;
     }
-    case GST_EVENT_EOS:
-      gst_element_send_event (roqdemux->sink_peer, event);
-      /* no break */
     default:
       ret = gst_pad_event_default (pad, parent, event);
       break;
