@@ -96,9 +96,9 @@
 
 #include <arpa/inet.h>
 
-#include <gst-quic-transport/gstquiccommon.h>
-#include <gst-quic-transport/gstquicstream.h>
-#include <gst-quic-transport/gstquicdatagram.h>
+#include <gstquiccommon.h>
+#include <gstquicstream.h>
+#include <gstquicdatagram.h>
 #include "gstrtpquicdemux.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_rtp_quic_demux_debug);

@@ -129,10 +129,10 @@
 
 #include "gstrtpquicmux.h"
 #include "gstroqflowidmanager.h"
-#include <gst-quic-transport/gstquiccommon.h>
+#include <gstquiccommon.h>
 /* DEBUGGING ONLY */
-#include <gst-quic-transport/gstquicstream.h>
-#include <gst-quic-transport/gstquicdatagram.h>
+#include <gstquicstream.h>
+#include <gstquicdatagram.h>
 /* END DEBUGGING ONLY */
 
 #include <arpa/inet.h>

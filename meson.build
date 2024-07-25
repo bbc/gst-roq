@@ -59,18 +59,18 @@ gst_dep = dependency('gstreamer-1.0',
 
 quiclib_dep = dependency('gstquiclib',
   required : true,
-  fallback : ['gst-quic-transport', 'gst_quic_transport_dep'])
+  fallback : ['gst-quic-transport', 'quiclib_dep'])
 
 quicutil_dep = dependency('gstquicutil',
   required : true,
-  fallback : ['gst-quic-transport', 'gst_quic_transport_dep'])
+  fallback : ['gst-quic-transport', 'quicutils_dep'])
 
 quicstream_dep = dependency('gstquicstream',
   required : true,
-  fallback : ['gst-quic-transport', 'gst_quic_transport_dep'])
+  fallback : ['gst-quic-transport', 'quicstream_dep'])
 
 quicdatagram_dep = dependency('gstquicdatagram',
   required : true,
-  fallback : ['gst-quic-transport', 'gst_quic_transport_dep'])
+  fallback : ['gst-quic-transport', 'quicdatagram_dep'])
 
 subdir('elements')
