@@ -1063,11 +1063,12 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     gst_buffer_map (buf, &map, GST_MAP_READ);
 
     off = gst_quiclib_get_varint (map.data, &flow_id);
-    payload_type = (guint32) map.data[off + 1];
+    payload_type = map.data[off + 1];
+
+    ssrc = ntohl ((map.data[off + 8] << 24) + (map.data[off + 9] << 16) +
+      (map.data[off + 10] << 8) + (map.data[off + 11]));
 
     gst_buffer_unmap (buf, &map);
-
-    ssrc = ntohl (ssrc);
 
     target_pad = rtp_quic_demux_get_src_pad (roqdemux, flow_id, ssrc,
         payload_type, &roqdemux->dg_offset);
@@ -1075,14 +1076,6 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     buf = gst_buffer_make_writable (buf);
 
     gst_buffer_resize (buf, off, -1);
-
-    if (flow_id == roqdemux->rtp_flow_id) { /* RTP */
-      memcpy (&ssrc, map.data + off + 4, 4);
-    } else if (flow_id == roqdemux->rtcp_flow_id) { /* RTCP */
-      memcpy (&ssrc, map.data + off + 8, 4);
-    } else {
-      return GST_FLOW_NOT_LINKED;
-    }
 
     buf->pts += roqdemux->dg_offset;
     buf->dts += roqdemux->dg_offset;

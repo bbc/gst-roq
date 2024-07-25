@@ -1133,8 +1133,8 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     seq_num = (map.data[off + 2] << 8) + (map.data[off + 3]);
     timestamp = (map.data[off + 4] << 24) + (map.data[off + 5] << 16) +
       (map.data[off + 6] << 8) + (map.data[off + 7]);
-    ssrc = (map.data[off + 8] << 24) + (map.data[off + 9] << 16) +
-      (map.data[off + 10] << 8) + (map.data[off + 11]);
+    ssrc = ntohl ((map.data[off + 8] << 24) + (map.data[off + 9] << 16) +
+      (map.data[off + 10] << 8) + (map.data[off + 11]));
     gst_buffer_unmap (buf, &map);
 
     if (roqmux->use_datagrams) {
