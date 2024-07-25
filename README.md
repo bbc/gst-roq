@@ -100,3 +100,37 @@ for a server acting as an RTP-over-QUIC receiver:
 ```
 gst-launch-1.0 roqsrcbin location="roq://0.0.0.0:4443" alpn="rtp-mux-quic-07" mode=server sni="gst-quic.hostname" cert="cert.pem" privkey="key.pem" ! application/x-rtp ! rtph264depay ! queue ! decodebin ! xvimagesink
 ```
+
+## Interop
+
+In order to facilitate easier interop running, the `interop` directory includes
+a script that builds pipelines compatible with the RTP-over-QUIC interop
+effort. Currently, this involves the following requirements:
+
+* 10 seconds of a single video stream.
+* VP8 video codec.
+* RTP Payload Type 96.
+* ALPN set to "roq-09".
+* Server listening on port 8080 - **IPv4 only**.
+* Client connects to address 127.0.0.1.
+* No certificate validation.
+
+The script can be controlled with some command line switches to run the
+interop in different modes:
+
+* The `--server` and `--client` switches are required to specify running in
+server or client mode, respectively.
+* The `--send` and `--receive` switches are required to specify whether this
+endpoint should send or receive the media stream.
+* The `--stream`, `--stream-per-frame` and `--datagram` switches only apply to
+the sending endpoint, and control how RTP is payloaded:
+    * The `--stream` option specifies all RTP packets will be sent on a single
+unidirectional QUIC stream.
+    * The `--stream-per-frame` option specifies that each RTP packet will be
+sent on its own unidirectional QUIC stream. Each frame should be packaged in a
+single RTP packet.
+    * The `--datagram` option specifies that RTP packets will be sent using the
+unreliable QUIC DATAGRAMs extension.
+
+The script will create private keys and certificates to use in the interop.
+OpenSSL is required on the host machine for this to work.

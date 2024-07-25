@@ -2,3 +2,8 @@
 .cproject
 .project
 .settings/
+.vscode/
+.cache/
+.codelite/
+.ctagsd/
+interop/*.pem
