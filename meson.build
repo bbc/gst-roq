@@ -42,7 +42,7 @@
 # Boston, MA 02111-1307, USA.
 #
 
-project ('gst-roq', 'c', version : '0.0.1', license : 'LGPL')
+project ('gst-roq', 'c', version : '0.1.0', license : 'LGPL')
 
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')
 
