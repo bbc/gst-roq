@@ -1432,7 +1432,10 @@ void rtp_quic_demux_pad_unlinked (GstPad *self, GstPad *peer,
       GST_TRACE_OBJECT (roqdemux, "Removing SRC pad %p for stream ID %lu", self,
           stream_id);
 
-      g_warn_if_fail (g_hash_table_remove (roqdemux->quic_streams, &stream_id));
+      /*
+       * If the final bit was set on the stream, this may have already happened
+       */
+      g_hash_table_remove (roqdemux->quic_streams, &stream_id);
     }
 
     gst_caps_unref (caps);
