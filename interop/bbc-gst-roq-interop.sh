@@ -73,6 +73,26 @@ interop_ensure_certs () {
     fi
 }
 
+check_gst_element () {
+    element_name=$1
+
+    #
+    # gst-inspect-1.0's --exists flag is broken for plugins in GST_PLUGIN_PATH:
+    #   https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/3246
+    #
+    gst-inspect-1.0 ${element_name} &> /dev/null
+    if [[ $? -ne 0 ]]; then
+        echo "Couldn't find element ${element_name}, searching for it..."
+        search_path=$(find ${PWD}/../ -name "libgst${element_name}.so" -printf %h -quit)
+        if [[ $? -ne 0 ]]; then
+            echo "Couldn't find element ${element_name} in the project directory - has it been built?"
+            echo "Alternatively, provide the directory where it is installed in the GST_PLUGIN_PATH environment variable."
+            exit -1
+        fi
+        export GST_PLUGIN_PATH=${search_path}:${GST_PLUGIN_PATH}
+    fi
+}
+
 # client or server
 endpoint_mode=""
 # stream or datagram
@@ -242,6 +262,13 @@ else
     echo "Need to set the participant mode to --send or --receive"
     exit 4
 fi
+
+check_gst_element "quicsrc"; if [[ $? -ne 0 ]]; then exit -1; fi
+check_gst_element "quicsink"; if [[ $? -ne 0 ]]; then exit -1; fi
+check_gst_element "quicdemux"; if [[ $? -ne 0 ]]; then exit -1; fi
+check_gst_element "quicmux"; if [[ $? -ne 0 ]]; then exit -1; fi
+check_gst_element "rtpquicdemux"; if [[ $? -ne 0 ]]; then exit -1; fi
+check_gst_element "rtpquicmux"; if [[ $? -ne 0 ]]; then exit -1; fi
 
 echo "### GStreamer RTP-over-QUIC Interop ###"
 
