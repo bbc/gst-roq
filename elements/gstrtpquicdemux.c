@@ -1224,7 +1224,17 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
           stream->onward_src_pad = rtp_quic_demux_get_src_pad (roqdemux,
               flow_id, ssrc, payload_type, &stream->offset);
 
-          g_assert (gst_pad_is_linked (stream->onward_src_pad));
+          if (!gst_pad_is_linked (stream->onward_src_pad)) {
+            GST_ERROR_OBJECT (roqdemux, "Couldn't link src pad for RTP flow ID "
+                "%ld, SSRC %u and payload type %u", flow_id, ssrc,
+                payload_type);
+            rv = FALSE;
+            gst_element_remove_pad (GST_ELEMENT (roqdemux),
+                stream->onward_src_pad);
+            stream->onward_src_pad = NULL;
+            g_object_unref (stream);
+            break;
+          }
 
           GST_TRACE_OBJECT (roqdemux, "Adding SRC pad %p for stream ID %lu",
               stream->onward_src_pad, stream_id);
