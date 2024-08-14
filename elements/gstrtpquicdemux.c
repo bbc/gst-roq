@@ -1002,7 +1002,7 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
       GST_TRACE_OBJECT (roqdemux, "Start of new RTP-over-QUIC frame on stream "
           "%lu with %lu bytes of expected payload length %lu",
-          stream_meta->stream_id, gst_buffer_get_size (buf),
+          stream_meta->stream_id, gst_buffer_get_size (buf) - varint_len,
           stream->expected_payloadlen);
 
       stream->buf = gst_buffer_copy_region (buf, GST_BUFFER_COPY_ALL,
@@ -1050,6 +1050,7 @@ gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     gst_buffer_unref (buf);
     buf = stream->buf;
     stream->buf = NULL;
+    stream->offset += stream_meta->length;
   } else {
     GstMapInfo map;
     gsize off = 0;
