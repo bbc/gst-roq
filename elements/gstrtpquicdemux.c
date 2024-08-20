@@ -783,12 +783,12 @@ rtp_quic_demux_get_rtp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc,
 
     gst_pad_sticky_events_foreach (src->src, forward_sticky_events,
         NULL);
+  }
 
-    if (offset != NULL) {
-      GST_INFO_OBJECT (roqdemux, "Setting stream offset to %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (src->offset));
-      *offset = src->offset;
-    }
+  if (offset != NULL) {
+    GST_INFO_OBJECT (roqdemux, "Setting stream offset to %" GST_TIME_FORMAT,
+        GST_TIME_ARGS (src->offset));
+    *offset = src->offset;
   }
 
   return src->src;
