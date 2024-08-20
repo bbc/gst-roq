@@ -1156,7 +1156,6 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
            */
           gint64 *stream_id_ptr = g_new (gint64, 1);
 
-
           buf_box = gst_structure_get_value (s, "stream-buf-peek");
           peek = GST_BUFFER (g_value_get_pointer (buf_box));
 

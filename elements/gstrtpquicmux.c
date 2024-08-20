@@ -1180,8 +1180,9 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   }
 
 
-  GST_DEBUG_OBJECT (roqmux, "Pushing buffer %p (size %lu) on pad %"
-      GST_PTR_FORMAT, buf, gst_buffer_get_size (buf), target_pad);
+  GST_INFO_OBJECT (roqmux, "Pushing buffer %p (size %lu, RTP frame length %lu)"
+      "on pad %" GST_PTR_FORMAT, buf, gst_buffer_get_size (buf), rtp_frame_len,
+      target_pad);
 
   rv = gst_pad_push (target_pad, buf);
 
