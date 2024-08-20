@@ -504,9 +504,6 @@ gst_rtp_quic_demux_src_event (GstPad *pad, GstObject *parent, GstEvent *event)
       gst_event_parse_qos (event, &qos_type, &proportion, &diff, &ts);
       switch (qos_type) {
         case GST_QOS_TYPE_OVERFLOW:
-          GST_TRACE_OBJECT (roqdemux, "Received Overflow QoS event with "
-              "timestamp %lu, jitter %ld, proportion %f", ts, diff, proportion);
-          break;
         case GST_QOS_TYPE_UNDERFLOW:
         {
           GList *pt_tables;
@@ -566,7 +563,7 @@ gst_rtp_quic_demux_src_event (GstPad *pad, GstObject *parent, GstEvent *event)
           break;
       }
 
-      ret = gst_pad_event_default (pad, parent, event);
+      gst_event_unref (event);
       break;
     }
     default:
