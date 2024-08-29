@@ -957,8 +957,6 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   if (!roqmux->use_datagrams) {
     GstCaps *padcaps;
     gchar *padcapsdbg;
-    GList *list;
-    guint i;
 
     padcaps = gst_pad_get_current_caps (pad);
 
@@ -973,23 +971,8 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
     gst_caps_unref (padcaps);
 
-    list = g_hash_table_get_keys (roqmux->ssrcs);
-    GST_TRACE_OBJECT (roqmux, "There are %u SSRCs", g_list_length (list));
-    for (i = 0; i < g_list_length (list); i++) {
-      GST_TRACE_OBJECT (roqmux, "SSRC %u: %d", i, *((gint *) list->data));
-    }
-    g_list_free (list);
-
     if (g_hash_table_lookup_extended (roqmux->ssrcs, &ssrc, NULL,
         (gpointer *) &pts)) {
-      list = g_hash_table_get_keys (pts);
-      GST_TRACE_OBJECT (roqmux, "There are %u payload types for SSRC %u",
-          g_list_length (list), ssrc);
-      for (i = 0; i < g_list_length (list); i++) {
-        GST_TRACE_OBJECT (roqmux, "PT %u: %d", i, *((gint *) list->data));
-      }
-      g_list_free (list);
-
       stream = g_hash_table_lookup (pts, &payload_type);
     }
 
