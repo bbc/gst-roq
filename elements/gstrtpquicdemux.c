@@ -911,202 +911,250 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
  * this function does the actual processing
  */
 static GstFlowReturn
-gst_rtp_quic_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
+gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
 {
   GstRtpQuicDemux *roqdemux;
   GstQuicLibStreamMeta *stream_meta = NULL;
   RtpQuicDemuxStream *stream = NULL;
   GstQuicLibDatagramMeta *datagram_meta = NULL;
-  GstPad *target_pad = NULL;
-  GstEvent *segment_event;
-  GstFlowReturn rv;
+  GstFlowReturn rv = GST_FLOW_ERROR;
 
   roqdemux = GST_RTPQUICDEMUX (parent);
 
-  GST_TRACE_OBJECT (roqdemux, "Received %lu byte buffer with PTS %"
-      GST_TIME_FORMAT ", DTS %" GST_TIME_FORMAT, gst_buffer_get_size (buf),
-      GST_TIME_ARGS (buf->pts), GST_TIME_ARGS (buf->dts));
-
-  /*GST_QUICLIB_PRINT_BUFFER (roqdemux, buf);*/
-
   stream_meta = gst_buffer_get_quiclib_stream_meta (buf);
-  if (stream_meta) {
+  datagram_meta = gst_buffer_get_quiclib_datagram_meta (buf);
 
+  GST_TRACE_OBJECT (roqdemux, "Received %lu byte %s buffer with PTS %"
+      GST_TIME_FORMAT ", DTS %" GST_TIME_FORMAT, gst_buffer_get_size (buf),
+      (stream_meta)?("stream"):("datagram"), GST_TIME_ARGS (buf->pts),
+      GST_TIME_ARGS (buf->dts));
+
+  if (stream_meta) {
     stream = g_hash_table_lookup (roqdemux->quic_streams,
         &stream_meta->stream_id);
     g_return_val_if_fail (stream, GST_FLOW_NOT_LINKED);
     g_return_val_if_fail (GST_IS_PAD (stream->onward_src_pad), GST_FLOW_ERROR);
+  } else if (!datagram_meta) {
+    GST_ERROR_OBJECT (roqdemux, "No QUIC buffer metas found");
+    return GST_FLOW_ERROR;
+  }
 
-    /*
-     * Zero length buffers with FIN bits set are common if the remote end
-     * couldn't set the FIN bit on it's last block, so sends a zero-length
-     * STREAM frame with the FIN bit sent.
-     */
-    if (gst_buffer_get_size (buf) == 0 && stream_meta->final) {
-      /*g_hash_table_remove (roqdemux->quic_streams, &stream_meta->stream_id);*/
-      if (stream->buf) {
-        gst_buffer_unref (buf);
+  buf = gst_buffer_make_writable (buf);
+
+  while (buf) {
+    GstPad *target_pad = NULL;
+    GstBuffer *target_buffer = NULL;
+    guint64 flow_id = G_MAXUINT64;
+    GstEvent *segment_event;
+
+    GST_TRACE_OBJECT (roqdemux, "Entry to while loop, buffer size %lu",
+        gst_buffer_get_size (buf));
+
+    if (stream) {
+      /*
+       * Zero length buffers with FIN bits set are common if the remote end
+       * couldn't set the FIN bit on it's last block, so sends a zero-length
+       * STREAM frame with the FIN bit sent.
+       */
+      if (gst_buffer_get_size (buf) == 0 && stream_meta->final) {
+        if (stream->buf) {
+          gst_buffer_unref (buf);
+        }
+        return GST_FLOW_OK;
       }
-      return GST_FLOW_OK;
+
+      /*
+       * Check whether this is a continuation of an existing buffer. If so,
+       * concatenate this buffer into it, checking whether it partially or
+       * completely fills this buffer.
+       */
+      if (stream->buf) {
+        gsize new_part_buf_size = gst_buffer_get_size (buf);
+        gsize remaining =
+            stream->expected_payloadlen - gst_buffer_get_size (stream->buf);
+        
+        if (new_part_buf_size > remaining) new_part_buf_size = remaining;
+
+        gst_buffer_copy_into (stream->buf, buf, GST_BUFFER_COPY_MEMORY, 0,
+            new_part_buf_size);
+
+        GST_TRACE_OBJECT (roqdemux, "Received %lu bytes, making %lu bytes "
+            "total of expected %lu byte frame", new_part_buf_size,
+            gst_buffer_get_size (stream->buf), stream->expected_payloadlen);
+
+        if (remaining < gst_buffer_get_size (buf)) {
+          gst_buffer_resize (buf, (gssize) remaining, -1);
+          target_buffer = stream->buf;
+          stream->buf = NULL;
+        } else {
+          if (remaining == gst_buffer_get_size (buf)) {
+            target_buffer = stream->buf;
+            stream->buf = NULL;
+          }
+          gst_buffer_unref (buf);
+          buf = NULL;
+
+          /* Haven't seen the end of this frame yet so wait for the next part */
+          if (target_buffer == NULL) return GST_FLOW_OK;
+
+          GST_DEBUG_OBJECT (roqdemux,
+              "Reception of frame of length %lu bytes complete",
+              stream->expected_payloadlen);
+          stream->buf = NULL;
+          stream->expected_payloadlen = 0;
+        }
+      }
     }
 
-    if (stream->buf == NULL) {
+    if (target_buffer == NULL) {
+      /*
+       * Read the frame header
+       */
       GstMapInfo map;
-      
       gsize varint_len = 0;
-
-      GST_TRACE_OBJECT (roqdemux, "Buffer has offset %lu, meta has offset %lu, "
-          "stream has offset %lu", buf->offset, stream_meta->offset,
-          stream->offset);
+      guint64 uni_stream_type = G_MAXUINT64;
+      guint64 length = G_MAXUINT64;
 
       gst_buffer_map (buf, &map, GST_MAP_READ);
 
-      if (stream_meta->offset == 0) {
-        guint64 flowid;
+      if (stream) {
+        GST_TRACE_OBJECT (roqdemux,
+            "Stream offset %lu, will %smatch uni stream type %lu",
+            stream_meta->offset,
+            (roqdemux->match_uni_stream_type)?(""):("not "),
+            roqdemux->uni_stream_type);
+      }
 
-        if (roqdemux->match_uni_stream_type) {
-          guint64 uni_stream_type;
+      if (stream && stream_meta->offset == 0 && roqdemux->match_uni_stream_type)
+      {
+        varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
 
-          varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
-
-          if (uni_stream_type != roqdemux->uni_stream_type) {
-            GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %lu "
-                "received doesn't match expected stream type %lu",
-                uni_stream_type, roqdemux->uni_stream_type);
-            gst_buffer_unmap (buf, &map);
-            return GST_FLOW_ERROR;
-          }
-        }
-        varint_len += gst_quiclib_get_varint (map.data + varint_len, &flowid);
-
-        if (roqdemux->rtp_flow_id == -1) {
-          g_object_set (G_OBJECT (roqdemux), "rtp-flow-id", flowid, NULL);
-        }
-
-        if ((flowid != roqdemux->rtp_flow_id) &&
-            (flowid != roqdemux->rtcp_flow_id)) {
-          GST_ERROR_OBJECT (roqdemux, "Flow ID %lu does not match expected RTP "
-              "flow ID %lu or RTCP flow ID %lu", flowid, roqdemux->rtp_flow_id,
-              roqdemux->rtcp_flow_id);
+        if ((guint64) uni_stream_type != roqdemux->uni_stream_type) {
+          GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %ld "
+              "received doesn't match expected stream type %lu",
+              uni_stream_type, roqdemux->uni_stream_type);
           gst_buffer_unmap (buf, &map);
           return GST_FLOW_ERROR;
         }
       }
-      varint_len += gst_quiclib_get_varint (map.data + varint_len,
-          &stream->expected_payloadlen);
+
+      if (!stream || stream_meta->offset == 0) {
+        varint_len += gst_quiclib_get_varint (map.data + varint_len, &flow_id);
+      }
+
+      if (stream) {
+        varint_len += gst_quiclib_get_varint (map.data + varint_len, &length);
+      }
 
       gst_buffer_unmap (buf, &map);
 
-      GST_TRACE_OBJECT (roqdemux, "Start of new RTP-over-QUIC frame on stream "
-          "%lu with %lu bytes of expected payload length %lu",
-          stream_meta->stream_id, gst_buffer_get_size (buf) - varint_len,
-          stream->expected_payloadlen);
+      GST_TRACE_OBJECT (roqdemux, "Read frame header with stream type %ld, "
+          "flow ID %ld and length %ld", uni_stream_type, flow_id, length);
 
-      stream->buf = gst_buffer_copy_region (buf, GST_BUFFER_COPY_ALL,
-          varint_len, -1);
+      gst_buffer_resize (buf, varint_len, -1);
 
-      stream_meta = gst_buffer_get_quiclib_stream_meta (stream->buf);
-      stream_meta->offset += varint_len;
-      stream_meta->length = stream->expected_payloadlen;
-
-      GST_TRACE_OBJECT (roqdemux, "Adding %" GST_TIME_FORMAT " offset to PTS %"
-          GST_TIME_FORMAT " and DTS %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (stream->offset), GST_TIME_ARGS (buf->pts),
-          GST_TIME_ARGS (buf->dts));
-
-      stream->buf->pts = buf->pts + stream->offset;
-      stream->buf->dts = buf->dts + stream->offset;
-
-      g_assert (GST_IS_BUFFER (stream->buf));
-    } else {
-      /* Continue in-progress buffer */
-      gst_buffer_copy_into (stream->buf, buf, GST_BUFFER_COPY_MEMORY, 0, -1);
-    }
-
-
-    GST_TRACE_OBJECT (roqdemux, "Received %sbuffer of length %lu bytes, making "
-        "%lu bytes in concat buffer of expected %lu",
-        (stream_meta->final)?("final "):(""), gst_buffer_get_size (buf),
-        gst_buffer_get_size (stream->buf), stream->expected_payloadlen);
-
-    if (gst_buffer_get_size (stream->buf) < stream->expected_payloadlen) {
-      /*
-       * If the final flag is set on the stream, then ignore this return and
-       * just give all the data we've received so far to the downstream element.
-       * The remote end could have ended the stream early in order to meet a
-       * delivery target, so the rest of the pipeline will just have to cope
-       * with the resulting loss of the rest of this RTP packet.
-       */
-      if (!stream_meta->final) {
+      if (stream && length > gst_buffer_get_size (buf)) {
+        stream->buf = gst_buffer_ref (buf);
+        stream->expected_payloadlen = (guint64) length;
+        gst_buffer_unref (buf);
+        buf = NULL;
         return GST_FLOW_OK;
+      }
+
+      if (!stream) {
+        /* 
+         * Datagrams don't carry a length header before the frame, but are
+         * guaranteed to fit in a single QUIC frame
+         */
+        length = gst_buffer_get_size (buf);
+      }
+
+      if (length < gst_buffer_get_size (buf)) {
+        target_buffer = gst_buffer_copy_region (buf, GST_BUFFER_COPY_MEMORY, 0,
+            length);
+        gst_buffer_resize (buf, length, -1);
+      } else {
+        target_buffer = buf;
+        buf = NULL;
       }
     }
 
-    stream_meta->length = gst_buffer_get_size (buf);
-    target_pad = stream->onward_src_pad;
-    gst_buffer_unref (buf);
-    buf = stream->buf;
-    stream->buf = NULL;
-    stream->offset += stream_meta->length;
-  } else {
-    GstMapInfo map;
-    gsize off = 0;
-    guint64 flow_id;
-    guint32 ssrc;
-    guint8 payload_type;
+    g_assert (target_buffer);
 
-    datagram_meta = gst_buffer_get_quiclib_datagram_meta (buf);
-    g_return_val_if_fail (datagram_meta, GST_FLOW_ERROR);
+    if (stream) {
+      target_pad = stream->onward_src_pad;
 
-    gst_buffer_map (buf, &map, GST_MAP_READ);
+      GST_TRACE_OBJECT (roqdemux, "Adding %" GST_TIME_FORMAT " offset to PTS %"
+          GST_TIME_FORMAT " and DTS %" GST_TIME_FORMAT,
+          GST_TIME_ARGS (stream->clock_offset),
+          GST_TIME_ARGS (target_buffer->pts),
+          GST_TIME_ARGS (target_buffer->dts));
 
-    off = gst_quiclib_get_varint (map.data, &flow_id);
-    payload_type = map.data[off + 1];
+      target_buffer->pts += stream->clock_offset;
+      target_buffer->dts += stream->clock_offset;
+    } else {
+      GstMapInfo map;
+      guint8 payload_type;
+      guint32 ssrc;
 
-    ssrc = ntohl ((map.data[off + 8] << 24) + (map.data[off + 9] << 16) +
-      (map.data[off + 10] << 8) + (map.data[off + 11]));
+      gst_buffer_map (target_buffer, &map, GST_MAP_READ);
 
-    gst_buffer_unmap (buf, &map);
+      payload_type = map.data[1];
+      ssrc = ntohl ((map.data[8] << 24) + (map.data[9] << 16) +
+          (map.data[10] << 8) + (map.data[11]));
 
-    target_pad = rtp_quic_demux_get_src_pad (roqdemux, flow_id, ssrc,
-        payload_type, &roqdemux->dg_offset);
+      gst_buffer_unmap (target_buffer, &map);
 
-    buf = gst_buffer_make_writable (buf);
+      target_pad = rtp_quic_demux_get_src_pad (roqdemux, (guint64) flow_id,
+          ssrc, payload_type, &roqdemux->dg_offset);
 
-    gst_buffer_resize (buf, off, -1);
+      GST_TRACE_OBJECT (roqdemux, "Adding %" GST_TIME_FORMAT " offset to PTS %"
+          GST_TIME_FORMAT " and DTS %" GST_TIME_FORMAT,
+          GST_TIME_ARGS (roqdemux->dg_offset),
+          GST_TIME_ARGS (target_buffer->pts),
+          GST_TIME_ARGS (target_buffer->dts));
 
-    buf->pts += roqdemux->dg_offset;
-    buf->dts += roqdemux->dg_offset;
+      target_buffer->pts += roqdemux->dg_offset;
+      target_buffer->dts += roqdemux->dg_offset;
+    }
+
+    if (G_UNLIKELY (!target_pad)) {
+      GST_ERROR_OBJECT (roqdemux,
+          "Couldn't map buffer for flow ID %ld to target pad", flow_id);
+      return GST_FLOW_ERROR;
+    }
+
+    g_assert (gst_pad_is_linked (target_pad));
+
+    segment_event = gst_pad_get_sticky_event (target_pad, GST_EVENT_SEGMENT, 0);
+    if (segment_event == NULL) {
+      GstSegment *segment = g_new0 (GstSegment, 1);
+      gst_segment_init (segment, GST_FORMAT_TIME);
+      segment_event = gst_event_new_segment (segment);
+      gst_pad_push_event (target_pad, segment_event);
+    } else {
+      gst_event_unref (segment_event);
+    }
+
+    GST_DEBUG_OBJECT (roqdemux, "Pushing buffer of size %lu bytes (consisting "
+        "of %u blocks of GstMemory and refcount %d) with PTS %" GST_TIME_FORMAT
+        ", DTS %" GST_TIME_FORMAT " on pad %p",
+        gst_buffer_get_size (target_buffer),
+        gst_buffer_n_memory (target_buffer),
+        GST_OBJECT_REFCOUNT_VALUE (target_buffer),
+        GST_TIME_ARGS (target_buffer->pts), GST_TIME_ARGS (target_buffer->dts),
+        target_pad);
+
+    GST_QUICLIB_PRINT_BUFFER (roqdemux, target_buffer);
+
+    if (stream && stream_meta->final) {
+      g_hash_table_remove (roqdemux->quic_streams, &stream_meta->stream_id);
+    }
+
+    rv = gst_pad_push (target_pad, target_buffer);
+
+    GST_DEBUG_OBJECT (roqdemux, "Push result: %d", rv);
   }
-
-  segment_event = gst_pad_get_sticky_event (target_pad, GST_EVENT_SEGMENT, 0);
-  if (segment_event == NULL) {
-    GstSegment *segment = g_new0 (GstSegment, 1);
-    gst_segment_init (segment, GST_FORMAT_TIME);
-    segment_event = gst_event_new_segment (segment);
-    gst_pad_push_event (target_pad, segment_event);
-  } else {
-    gst_event_unref (segment_event);
-  }
-
-  g_assert (target_pad);
-  g_assert (gst_pad_is_linked (target_pad));
-
-  GST_DEBUG_OBJECT (roqdemux, "Pushing buffer of size %lu bytes (consisting of"
-      " %u blocks of GstMemory and refcount %d) with PTS %" GST_TIME_FORMAT
-      ", DTS %" GST_TIME_FORMAT " on pad %p", gst_buffer_get_size (buf),
-      gst_buffer_n_memory (buf), GST_OBJECT_REFCOUNT_VALUE (buf),
-      GST_TIME_ARGS (buf->pts), GST_TIME_ARGS (buf->dts), target_pad);
-
-  GST_QUICLIB_PRINT_BUFFER (roqdemux, buf);
-
-  if (stream && stream_meta->final) {
-    g_hash_table_remove (roqdemux->quic_streams, &stream_meta->stream_id);
-  }
-
-  rv = gst_pad_push (target_pad, buf);
-
-  GST_DEBUG_OBJECT (roqdemux, "Push result: %d", rv);
 
   return rv;
 }
@@ -1219,7 +1267,7 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
           g_assert (stream);
 
           stream->onward_src_pad = rtp_quic_demux_get_src_pad (roqdemux,
-              flow_id, ssrc, payload_type, &stream->offset);
+              flow_id, ssrc, payload_type, &stream->clock_offset);
 
           if (!gst_pad_is_linked (stream->onward_src_pad)) {
             GST_ERROR_OBJECT (roqdemux, "Couldn't link src pad for RTP flow ID "

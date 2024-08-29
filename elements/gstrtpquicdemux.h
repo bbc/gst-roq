@@ -75,7 +75,7 @@ struct _RtpQuicDemuxStream
   GstPad *onward_src_pad;
   guint64 expected_payloadlen;
 
-  GstClockTime offset;
+  GstClockTime clock_offset;
 
   /* Concatenate all buffers for a payload together in here */
   GstBuffer *buf;
