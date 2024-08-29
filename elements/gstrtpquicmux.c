@@ -1023,14 +1023,6 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       stream->stream_offset = 0;
     }
 
-    if (stream->stream_offset == 0) {
-      rtp_quic_mux_write_payload_header (&buf,
-          (roqmux->add_uni_stream_header)?(roqmux->uni_stream_type):(-1),
-          roqmux->rtp_flow_id, TRUE);
-    } else {
-      rtp_quic_mux_write_payload_header (&buf, -1, -1, TRUE);
-    }
-
     GST_TRACE_OBJECT (roqmux, "Stream boundary %s, stream packing ratio %u, "
         "stream counter %u, stream offset %lu, buffer flag marker %s, "
         "buffer flag delta unit %s",
@@ -1056,6 +1048,14 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         stream->stream_offset = 0;
         stream->counter = 0;
       }
+    }
+
+    if (stream->stream_offset == 0) {
+      rtp_quic_mux_write_payload_header (&buf,
+          (roqmux->add_uni_stream_header)?(roqmux->uni_stream_type):(-1),
+          roqmux->rtp_flow_id, TRUE);
+    } else {
+      rtp_quic_mux_write_payload_header (&buf, -1, -1, TRUE);
     }
 
     target_pad = gst_object_ref (stream->stream_pad);
