@@ -72,6 +72,9 @@ struct _RtpQuicDemuxStream
 {
   GObject parent;
 
+  gint64 stream_id;
+  guint64 flow_id;
+
   GstPad *onward_src_pad;
   guint64 expected_payloadlen;
 

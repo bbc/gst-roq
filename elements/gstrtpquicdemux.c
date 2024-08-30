@@ -114,8 +114,11 @@ rtp_quic_demux_stream_class_init (RtpQuicDemuxStreamClass *klass)
 static void
 rtp_quic_demux_stream_init (RtpQuicDemuxStream *stream)
 {
+  stream->stream_id = -1;
+  stream->flow_id = G_MAXUINT64;
   stream->onward_src_pad = NULL;
   stream->expected_payloadlen = 0;
+  stream->clock_offset = 0;
   stream->buf = NULL;
 }
 
@@ -330,7 +333,7 @@ gst_rtp_quic_demux_init (GstRtpQuicDemux * roqdemux)
   roqdemux->src_ssrcs_rtcp = g_hash_table_new_full (g_int_hash, g_int_equal,
       g_free, (GDestroyNotify) rtp_quic_demux_ssrc_hash_destroy);
   roqdemux->quic_streams = g_hash_table_new_full (g_int64_hash, g_int64_equal,
-      g_free, gst_object_unref);
+      NULL, gst_object_unref);
 
   roqdemux->rtp_flow_id = -1;
   roqdemux->rtcp_flow_id = -1;
@@ -917,6 +920,7 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
   GstQuicLibStreamMeta *stream_meta = NULL;
   RtpQuicDemuxStream *stream = NULL;
   GstQuicLibDatagramMeta *datagram_meta = NULL;
+  guint64 flow_id;
   GstFlowReturn rv = GST_FLOW_ERROR;
 
   roqdemux = GST_RTPQUICDEMUX (parent);
@@ -929,22 +933,69 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
       (stream_meta)?("stream"):("datagram"), GST_TIME_ARGS (buf->pts),
       GST_TIME_ARGS (buf->dts));
 
+  buf = gst_buffer_make_writable (buf);
+
   if (stream_meta) {
     stream = g_hash_table_lookup (roqdemux->quic_streams,
         &stream_meta->stream_id);
     g_return_val_if_fail (stream, GST_FLOW_NOT_LINKED);
-    g_return_val_if_fail (GST_IS_PAD (stream->onward_src_pad), GST_FLOW_ERROR);
+    /*g_return_val_if_fail (GST_IS_PAD (stream->onward_src_pad), GST_FLOW_ERROR);*/
+
+    GST_TRACE_OBJECT (roqdemux, "Stream %lu offset %lu%s, %sonward pad set %p, "
+        "will %smatch uni stream type %lu", stream_meta->stream_id,
+        stream_meta->offset, (stream_meta->final)?(", final buffer"):(""),
+        (stream->onward_src_pad)?(""):("no "), stream->onward_src_pad,
+        (roqdemux->match_uni_stream_type)?(""):("not "),
+        roqdemux->uni_stream_type);
+
+    if (stream_meta->offset == 0) {
+      GstMapInfo map;
+      gsize varint_len = 0;
+      guint64 uni_stream_type;
+
+      gst_buffer_map (buf, &map, GST_MAP_READ);
+      if (roqdemux->match_uni_stream_type) {
+        varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
+
+        if ((guint64) uni_stream_type != roqdemux->uni_stream_type) {
+          GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %ld "
+              "received doesn't match expected stream type %lu",
+              uni_stream_type, roqdemux->uni_stream_type);
+          gst_buffer_unmap (buf, &map);
+          return GST_FLOW_ERROR;
+        }
+      }
+      
+      varint_len += gst_quiclib_get_varint (map.data + varint_len,
+          &stream->flow_id);
+
+      gst_buffer_unmap (buf, &map);
+
+      if (stream->flow_id != roqdemux->rtp_flow_id &&
+          stream->flow_id != roqdemux->rtcp_flow_id) {
+        GST_WARNING_OBJECT (roqdemux, "Received unexpected flow ID %lu, "
+            "expected RTP flow ID %lu, RTCP flow ID %lu", stream->flow_id,
+            roqdemux->rtp_flow_id, roqdemux->rtcp_flow_id);
+        return GST_FLOW_ERROR;
+      }
+
+      if (varint_len == gst_buffer_get_size (buf)) {
+        GST_TRACE_OBJECT (roqdemux, "Stream buffer contains RoQ headers only");
+        return GST_FLOW_OK;
+      }
+
+      gst_buffer_resize (buf, varint_len, -1);
+    } else {
+      flow_id = stream->flow_id;
+    }
   } else if (!datagram_meta) {
     GST_ERROR_OBJECT (roqdemux, "No QUIC buffer metas found");
     return GST_FLOW_ERROR;
   }
 
-  buf = gst_buffer_make_writable (buf);
-
   while (buf) {
     GstPad *target_pad = NULL;
     GstBuffer *target_buffer = NULL;
-    guint64 flow_id = G_MAXUINT64;
     GstEvent *segment_event;
 
     GST_TRACE_OBJECT (roqdemux, "Entry to while loop, buffer size %lu",
@@ -1007,66 +1058,51 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
     }
 
     if (target_buffer == NULL) {
-      /*
-       * Read the frame header
-       */
       GstMapInfo map;
       gsize varint_len = 0;
-      guint64 uni_stream_type = G_MAXUINT64;
-      guint64 length = G_MAXUINT64;
-
+      guint64 varint;
+      guint64 length;
+      
       gst_buffer_map (buf, &map, GST_MAP_READ);
 
-      if (stream) {
-        GST_TRACE_OBJECT (roqdemux,
-            "Stream offset %lu, will %smatch uni stream type %lu",
-            stream_meta->offset,
-            (roqdemux->match_uni_stream_type)?(""):("not "),
-            roqdemux->uni_stream_type);
-      }
-
-      if (stream && stream_meta->offset == 0 && roqdemux->match_uni_stream_type)
-      {
-        varint_len = gst_quiclib_get_varint (map.data, &uni_stream_type);
-
-        if ((guint64) uni_stream_type != roqdemux->uni_stream_type) {
-          GST_WARNING_OBJECT (roqdemux, "Unidirectional stream type %ld "
-              "received doesn't match expected stream type %lu",
-              uni_stream_type, roqdemux->uni_stream_type);
-          gst_buffer_unmap (buf, &map);
-          return GST_FLOW_ERROR;
-        }
-      }
-
-      if (!stream || stream_meta->offset == 0) {
-        varint_len += gst_quiclib_get_varint (map.data + varint_len, &flow_id);
-      }
-
-      if (stream) {
-        varint_len += gst_quiclib_get_varint (map.data + varint_len, &length);
-      }
+      varint_len = gst_quiclib_get_varint (map.data, &varint);
 
       gst_buffer_unmap (buf, &map);
 
-      GST_TRACE_OBJECT (roqdemux, "Read frame header with stream type %ld, "
-          "flow ID %ld and length %ld", uni_stream_type, flow_id, length);
-
       gst_buffer_resize (buf, varint_len, -1);
 
-      if (stream && length > gst_buffer_get_size (buf)) {
-        stream->buf = gst_buffer_ref (buf);
-        stream->expected_payloadlen = (guint64) length;
-        gst_buffer_unref (buf);
-        buf = NULL;
-        return GST_FLOW_OK;
-      }
+      if (stream) {
+        GST_TRACE_OBJECT (roqdemux, "Read frame header with length %ld",
+            varint);
 
-      if (!stream) {
+        length = varint;
+
+        if (length > gst_buffer_get_size (buf)) {
+          GST_TRACE_OBJECT (roqdemux, "Frame size %lu greater than current "
+              "buffer size %lu, wait for more data", length,
+              gst_buffer_get_size (buf));
+          stream->buf = gst_buffer_ref (buf);
+          stream->expected_payloadlen = (guint64) length;
+          gst_buffer_unref (buf);
+          buf = NULL;
+          return GST_FLOW_OK;
+        }       
+      } else {
         /* 
          * Datagrams don't carry a length header before the frame, but are
          * guaranteed to fit in a single QUIC frame
          */
         length = gst_buffer_get_size (buf);
+
+        flow_id = varint;
+
+        if (flow_id != roqdemux->rtp_flow_id &&
+            flow_id != roqdemux->rtcp_flow_id) {
+          GST_WARNING_OBJECT (roqdemux, "Received unexpected flow ID %lu, "
+              "expected RTP flow ID %lu, RTCP flow ID %lu", flow_id,
+              roqdemux->rtp_flow_id, roqdemux->rtcp_flow_id);
+          return GST_FLOW_ERROR;
+        }
       }
 
       if (length < gst_buffer_get_size (buf)) {
@@ -1081,7 +1117,7 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
 
     g_assert (target_buffer);
 
-    if (stream) {
+    if (stream && GST_IS_PAD (stream->onward_src_pad)) {
       target_pad = stream->onward_src_pad;
 
       GST_TRACE_OBJECT (roqdemux, "Adding %" GST_TIME_FORMAT " offset to PTS %"
@@ -1096,6 +1132,7 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
       GstMapInfo map;
       guint8 payload_type;
       guint32 ssrc;
+      GstClockTime offset;
 
       gst_buffer_map (target_buffer, &map, GST_MAP_READ);
 
@@ -1106,16 +1143,19 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
       gst_buffer_unmap (target_buffer, &map);
 
       target_pad = rtp_quic_demux_get_src_pad (roqdemux, (guint64) flow_id,
-          ssrc, payload_type, &roqdemux->dg_offset);
+          ssrc, payload_type, &offset);
 
       GST_TRACE_OBJECT (roqdemux, "Adding %" GST_TIME_FORMAT " offset to PTS %"
-          GST_TIME_FORMAT " and DTS %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (roqdemux->dg_offset),
+          GST_TIME_FORMAT " and DTS %" GST_TIME_FORMAT, GST_TIME_ARGS (offset),
           GST_TIME_ARGS (target_buffer->pts),
           GST_TIME_ARGS (target_buffer->dts));
 
-      target_buffer->pts += roqdemux->dg_offset;
-      target_buffer->dts += roqdemux->dg_offset;
+      target_buffer->pts += offset;
+      target_buffer->dts += offset;
+
+      if (!stream) {
+        roqdemux->dg_offset = offset;
+      }
     }
 
     if (G_UNLIKELY (!target_pad)) {
@@ -1193,16 +1233,8 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
           GstBuffer *peek;
           GstMapInfo map;
           guint64 flow_id;
-          guint64 payload_size;
           gsize varint_size = 0;
-          guint8 payload_type;
-          guint32 ssrc;
           RtpQuicDemuxStream *stream;
-          /*
-           * Free'd by g_free presented as the key_destroy_func in
-           * g_hash_table_new_full
-           */
-          gint64 *stream_id_ptr = g_new (gint64, 1);
 
           buf_box = gst_structure_get_value (s, "stream-buf-peek");
           peek = GST_BUFFER (g_value_get_pointer (buf_box));
@@ -1221,14 +1253,18 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
               gst_buffer_unmap (peek, &map);
               return FALSE;
             }
+
+            if (map.size == varint_size) {
+              /* TODO: Handle this more gracefully */
+              GST_WARNING_OBJECT (roqdemux, "Buffer peek only includes stream "
+                  "type, not flow ID. Cannot tell if this buffer is for us.");
+              gst_buffer_unmap (peek, &map);
+              return FALSE;
+            }
           }
 
           varint_size += gst_quiclib_get_varint (map.data + varint_size,
               &flow_id);
-          varint_size += gst_quiclib_get_varint (map.data + varint_size,
-              &payload_size);
-
-          payload_type = (guint32) map.data[varint_size + 1];
 
           if (roqdemux->rtp_flow_id == -1) {
             /*
@@ -1237,56 +1273,71 @@ gst_rtp_quic_demux_query (GstElement *parent, GstQuery *query)
               */
             g_object_set (roqdemux, "rtp-flow-id", flow_id, NULL);
           }
-          if (flow_id == roqdemux->rtp_flow_id &&
-              roqdemux->rtp_flow_id != roqdemux->rtcp_flow_id) {
-            memcpy (&ssrc, map.data + varint_size + 8, 4);
-          } else if (flow_id == roqdemux->rtcp_flow_id ||
-              (roqdemux->rtcp_flow_id == -1 &&
-                flow_id == roqdemux->rtp_flow_id + 1)) {
-            memcpy (&ssrc, map.data + varint_size + 4, 4);
-          } else if (roqdemux->rtp_flow_id == roqdemux->rtcp_flow_id) {
-             if ((payload_type & 0x7f) >= 64 || (payload_type & 0x7f) <= 95) {
-              /* RFC 5761 - Probably RTCP */
-              memcpy (&ssrc, map.data + varint_size + 4, 4);
-            } else {
-              /* Probably RTP */
-              memcpy (&ssrc, map.data + varint_size + 4, 4);
-            }
-          } else {
-            GST_DEBUG_OBJECT (roqdemux,
-                "Flow ID %lu doesn't match configured RTP flow ID %ld or "
-                "RTCP flow ID %ld", flow_id, roqdemux->rtp_flow_id,
-                roqdemux->rtcp_flow_id);
-            gst_buffer_unmap (peek, &map);
-            return FALSE;
-          }
-
-          ssrc = ntohl (ssrc);
 
           stream = g_object_new (RTPQUICDEMUX_TYPE_STREAM, NULL);
           g_assert (stream);
 
-          stream->onward_src_pad = rtp_quic_demux_get_src_pad (roqdemux,
-              flow_id, ssrc, payload_type, &stream->clock_offset);
+          if (map.size > varint_size) {
+            guint64 payload_size;
+            guint8 payload_type;
+            guint32 ssrc;
+            varint_size += gst_quiclib_get_varint (map.data + varint_size,
+                &payload_size);
 
-          if (!gst_pad_is_linked (stream->onward_src_pad)) {
-            GST_ERROR_OBJECT (roqdemux, "Couldn't link src pad for RTP flow ID "
-                "%ld, SSRC %u and payload type %u", flow_id, ssrc,
-                payload_type);
-            rv = FALSE;
-            gst_element_remove_pad (GST_ELEMENT (roqdemux),
-                stream->onward_src_pad);
-            stream->onward_src_pad = NULL;
-            g_object_unref (stream);
-            break;
+            payload_type = (guint32) map.data[varint_size + 1];
+
+            if (flow_id == roqdemux->rtp_flow_id &&
+                roqdemux->rtp_flow_id != roqdemux->rtcp_flow_id) {
+              memcpy (&ssrc, map.data + varint_size + 8, 4);
+            } else if (flow_id == roqdemux->rtcp_flow_id ||
+                (roqdemux->rtcp_flow_id == -1 &&
+                  flow_id == roqdemux->rtp_flow_id + 1)) {
+              memcpy (&ssrc, map.data + varint_size + 4, 4);
+            } else if (roqdemux->rtp_flow_id == roqdemux->rtcp_flow_id) {
+              if ((payload_type & 0x7f) >= 64 || (payload_type & 0x7f) <= 95) {
+                /* RFC 5761 - Probably RTCP */
+                memcpy (&ssrc, map.data + varint_size + 4, 4);
+              } else {
+                /* Probably RTP */
+                memcpy (&ssrc, map.data + varint_size + 4, 4);
+              }
+            } else {
+              GST_DEBUG_OBJECT (roqdemux,
+                  "Flow ID %lu doesn't match configured RTP flow ID %ld or "
+                  "RTCP flow ID %ld", flow_id, roqdemux->rtp_flow_id,
+                  roqdemux->rtcp_flow_id);
+              gst_buffer_unmap (peek, &map);
+              return FALSE;
+            }
+
+            ssrc = ntohl (ssrc);
+
+            stream->onward_src_pad = rtp_quic_demux_get_src_pad (roqdemux,
+                flow_id, ssrc, payload_type, &stream->clock_offset);
+
+            if (!gst_pad_is_linked (stream->onward_src_pad)) {
+              GST_ERROR_OBJECT (roqdemux, "Couldn't link src pad for RTP flow "
+                  "ID %ld, SSRC %u and payload type %u", flow_id, ssrc,
+                  payload_type);
+              rv = FALSE;
+              gst_element_remove_pad (GST_ELEMENT (roqdemux),
+                  stream->onward_src_pad);
+              stream->onward_src_pad = NULL;
+              g_object_unref (stream);
+              break;
+            }
+
+            GST_TRACE_OBJECT (roqdemux, "Adding SRC pad %" GST_PTR_FORMAT
+              " for stream ID %lu", stream->onward_src_pad, stream_id);
+          } else {
+            GST_DEBUG_OBJECT (roqdemux, "First buffer on stream %lu missing "
+                "frame - flow ID or uni stream type matched only", stream_id);
           }
 
-          GST_TRACE_OBJECT (roqdemux, "Adding SRC pad %p for stream ID %lu",
-              stream->onward_src_pad, stream_id);
+          stream->stream_id = (gint64) stream_id;
 
-          *stream_id_ptr = (gint64) stream_id;
-
-          g_hash_table_insert (roqdemux->quic_streams, stream_id_ptr, stream);
+          g_hash_table_insert (roqdemux->quic_streams, &stream->stream_id,
+              stream);
 
           gst_buffer_unmap (peek, &map);
 
