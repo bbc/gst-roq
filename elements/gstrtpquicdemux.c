@@ -128,7 +128,9 @@ enum
   PROP_RTP_FLOW_ID,
   PROP_RTCP_FLOW_ID,
   PROP_UNI_STREAM_TYPE,
-  PROP_USE_UNI_STREAM_HEADER
+  PROP_USE_UNI_STREAM_HEADER,
+  PROP_STREAM_FRAMES_RECEIVED,
+  PROP_DATAGRAMS_RECEIVED
 };
 
 /**
@@ -301,6 +303,17 @@ gst_rtp_quic_demux_class_init (GstRtpQuicDemuxClass * klass)
           "matches the value specified in uni-stream-type", FALSE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_STREAM_FRAMES_RECEIVED,
+      g_param_spec_uint64 ("stream-frames-recv",
+          "Number of STREAM frames received",
+          "A counter of the number of STREAM frames received for a RoQ stream",
+          0, G_MAXUINT64, 0, G_PARAM_READABLE));
+  
+  g_object_class_install_property (gobject_class, PROP_DATAGRAMS_RECEIVED,
+      g_param_spec_uint64 ("datagrams-recv", "Number of DATAGRAMs received",
+          "A counter for the number of DATAGRAMs received for a RoQ stream",
+          0, G_MAXUINT64, 0, G_PARAM_READABLE));
+
   gst_element_class_set_static_metadata (gstelement_class,
         "RTP-over-QUIC demultiplexer", "Demuxer/Network/Protocol",
         "Receive RTP-over-QUIC media data via QUIC transport",
@@ -338,6 +351,9 @@ gst_rtp_quic_demux_init (GstRtpQuicDemux * roqdemux)
   roqdemux->rtp_flow_id = -1;
   roqdemux->rtcp_flow_id = -1;
   roqdemux->datagram_sink = NULL;
+
+  roqdemux->stream_frames_received = 0;
+  roqdemux->datagrams_received = 0;
 
   GST_DEBUG_OBJECT (roqdemux, "RTP QUIC demux initialised");
 }
@@ -391,6 +407,12 @@ gst_rtp_quic_demux_get_property (GObject * object, guint prop_id,
       break;
     case PROP_USE_UNI_STREAM_HEADER:
       g_value_set_boolean (value, roqdemux->match_uni_stream_type);
+      break;
+    case PROP_STREAM_FRAMES_RECEIVED:
+      g_value_set_uint64 (value, roqdemux->stream_frames_received);
+      break;
+    case PROP_DATAGRAMS_RECEIVED:
+      g_value_set_uint64 (value, roqdemux->datagrams_received);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1194,6 +1216,12 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
     rv = gst_pad_push (target_pad, target_buffer);
 
     GST_DEBUG_OBJECT (roqdemux, "Push result: %d", rv);
+
+    if (stream_meta) {
+      roqdemux->stream_frames_received++;
+    } else {
+      roqdemux->datagrams_received++;
+    }
   }
 
   return rv;

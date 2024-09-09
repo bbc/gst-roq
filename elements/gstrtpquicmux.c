@@ -176,6 +176,8 @@ enum
 {
   PROP_0,
   PROP_RTPQUICMUX_ENUMS,
+  PROP_STREAM_FRAMES_SENT,
+  PROP_DATAGRAMS_SENT,
   PROP_MAX
 };
 
@@ -276,6 +278,16 @@ gst_rtp_quic_mux_class_init (GstRtpQuicMuxClass * klass)
       GST_DEBUG_FUNCPTR (gst_rtp_quic_mux_release_pad);
 
   gst_rtp_quic_mux_install_properties_map (gobject_class);
+
+  g_object_class_install_property (gobject_class, PROP_STREAM_FRAMES_SENT,
+      g_param_spec_uint64 ("stream-frames-sent", "Number of STREAM frames sent",
+          "A counter of the number of STREAM frames sent for a RoQ stream",
+          0, G_MAXUINT64, 0, G_PARAM_READABLE));
+  
+  g_object_class_install_property (gobject_class, PROP_DATAGRAMS_SENT,
+      g_param_spec_uint64 ("datagrams-sent", "Number of DATAGRAMs sent",
+          "A counter for the number of DATAGRAMs sent for a RoQ stream",
+          0, G_MAXUINT64, 0, G_PARAM_READABLE));
 
   gst_element_class_set_static_metadata (gstelement_class,
         "RTP-over-QUIC multiplexer", "Muxer/Network/Protocol",
@@ -440,6 +452,12 @@ gst_rtp_quic_mux_get_property (GObject * object, guint prop_id,
       break;
     case PROP_USE_UNI_STREAM_HEADER:
       g_value_set_boolean (value, roqmux->add_uni_stream_header);
+      break;
+    case PROP_STREAM_FRAMES_SENT:
+      g_value_set_uint64 (value, roqmux->stream_frames_sent);
+      break;
+    case PROP_DATAGRAMS_SENT:
+      g_value_set_uint64 (value, roqmux->datagrams_sent);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1069,6 +1087,8 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     GST_DEBUG_OBJECT (roqmux,
         "Pushing buffer of length %lu bytes on unidirectional stream",
         gst_buffer_get_size (buf));
+
+    roqmux->stream_frames_sent++;
   } else {
     if (roqmux->datagram_pad == NULL) {
       _rtp_quic_mux_open_datagram_pad (roqmux, pad);
@@ -1080,6 +1100,8 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
     GST_DEBUG_OBJECT (roqmux, "Pushing buffer of length %lu in a datagram",
         gst_buffer_get_size (buf));
+
+    roqmux->datagrams_sent++;
   }
 
   if (target_pad == NULL) {
@@ -1263,6 +1285,8 @@ gst_rtp_quic_mux_rtcp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
     GST_DEBUG_OBJECT (roqmux, "Pushing buffer of length %lu in a datagram",
         gst_buffer_get_size (buf));
+
+    roqmux->datagrams_sent++;
   } else {
     if (!g_hash_table_lookup_extended (roqmux->rtcp_pads, (gconstpointer) pad,
         NULL, (gpointer *) &target_pad)) {
@@ -1286,6 +1310,8 @@ gst_rtp_quic_mux_rtcp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     } else {
       rtp_quic_mux_write_payload_header (&buf, -1, -1, TRUE);
     }
+
+    roqmux->stream_frames_sent++;
   }
 
   /*

@@ -132,6 +132,9 @@ struct _GstRtpQuicMux
 
   GRecMutex mutex;
   GCond cond;
+
+  guint64 stream_frames_sent;
+  guint64 datagrams_sent;
 };
 
 typedef struct _GstQuicMux GstQuicMux;

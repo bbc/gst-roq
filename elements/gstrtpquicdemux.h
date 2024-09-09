@@ -129,6 +129,9 @@ struct _GstRtpQuicDemux
 
   guint64 uni_stream_type;
   gboolean match_uni_stream_type;
+
+  guint64 stream_frames_received;
+  guint64 datagrams_received;
 };
 
 G_END_DECLS
