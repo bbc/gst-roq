@@ -842,12 +842,52 @@ rtp_quic_mux_new_uni_src_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
   g_assert (gst_pad_set_active (rv, TRUE));
 
   if (!gst_pad_is_linked (rv)) {
+    GstPadTemplate *req_pad_templ, *quicmux_pad_templ;
+    GstPad *remote;
+    GstPadLinkReturn link_rv;
     g_assert (roqmux->quicmux != NULL);
 
-    if (!gst_element_link_pads (GST_ELEMENT (roqmux), GST_PAD_NAME (rv),
-        roqmux->quicmux, NULL)) {
-      GST_WARNING_OBJECT (roqmux, "Couldn't link new pad %s to QuicMux %p!",
-          GST_PAD_NAME (rv), roqmux->quicmux);
+    req_pad_templ = gst_static_pad_template_get (&quic_stream_src_factory);
+    quicmux_pad_templ = gst_element_get_compatible_pad_template (
+      roqmux->quicmux, req_pad_templ);
+
+    if (quicmux_pad_templ == NULL) {
+      GST_ERROR_OBJECT (roqmux, "Couldn't get compatible pad template from "
+          "quicmux %p with local pad template %" GST_PTR_FORMAT,
+          roqmux->quicmux, req_pad_templ);
+      gst_object_unref (rv);
+      return NULL;
+    }
+
+    remote = gst_element_request_pad (roqmux->quicmux, quicmux_pad_templ, NULL,
+      NULL);
+
+    link_rv = gst_pad_link (rv, remote);
+
+    if (link_rv != GST_PAD_LINK_OK) {
+      switch (link_rv) {
+        case GST_PAD_LINK_WRONG_HIERARCHY:
+          GST_ERROR_OBJECT (roqmux,
+            "RTP-over-QUIC mux and QuicMux have different heirarchy!");
+          break;
+        case GST_PAD_LINK_WAS_LINKED:
+          GST_WARNING_OBJECT (roqmux, "Pad %" GST_PTR_FORMAT " already linked",
+              remote);
+          break;
+        case GST_PAD_LINK_WRONG_DIRECTION:
+        case GST_PAD_LINK_NOFORMAT:
+        case GST_PAD_LINK_NOSCHED:
+          g_abort ();
+        case GST_PAD_LINK_REFUSED:
+          GST_ERROR_OBJECT (roqmux, "Pad %" GST_PTR_FORMAT " refused link",
+            remote);
+          break;
+      }
+
+      gst_object_unref (rv);
+      gst_object_unref (remote);
+      rv = NULL;
+      return NULL;
     }
   }
 
