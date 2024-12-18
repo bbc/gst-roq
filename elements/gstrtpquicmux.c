@@ -372,7 +372,7 @@ gst_rtp_quic_mux_set_property (GObject * object, guint prop_id,
         }
         roqmux->rtp_flow_id = flow_id;
       } else {
-        GST_ERROR_OBJECT (roqmux, "Couldn't set Flow ID to %lu as this is "
+        GST_ERROR_OBJECT (roqmux, "Couldn't set RTP Flow ID to %lu as this is "
             "already in use elsewhere!", flow_id);
       }
       break;
@@ -382,7 +382,11 @@ gst_rtp_quic_mux_set_property (GObject * object, guint prop_id,
       gint64 new_flow_id = g_value_get_int64 (value);
       
       if (new_flow_id == -1) {
-        
+        if (roqmux->rtp_flow_id == -1) {
+          roqmux->rtcp_flow_id = -1;
+          break;
+        }
+        roqmux->rtcp_flow_id = roqmux->rtp_flow_id + 1;
       } else if (gst_roq_flow_id_manager_new_flow_id ((guint64) new_flow_id)) {
         if (roqmux->rtcp_flow_id == -1) {
           gst_roq_flow_id_manager_retire_flow_id (
@@ -390,8 +394,14 @@ gst_rtp_quic_mux_set_property (GObject * object, guint prop_id,
         } else {
           gst_roq_flow_id_manager_retire_flow_id (
             (guint64) roqmux->rtcp_flow_id);
+          gst_roq_flow_id_manager_new_flow_id ((guint64) new_flow_id);
         }
+        roqmux->rtcp_flow_id = new_flow_id;
+      } else {
+        GST_ERROR_OBJECT (roqmux, "Couldn't set RTCP Flow ID to %lu as this is "
+            "already in use elsewhere!", new_flow_id);
       }
+      GST_FIXME_OBJECT (roqmux, "RTCP Flow ID: %ld", roqmux->rtcp_flow_id);
       break;
     }
     case PROP_STREAM_BOUNDARY:
@@ -599,7 +609,9 @@ gst_rtp_quic_mux_sink_event (GstPad * pad, GstObject * parent,
     }
     case GST_EVENT_EOS:
       g_rec_mutex_lock (&roqmux->mutex);
-      ret = gst_element_send_event (roqmux->quicmux, event);
+      if (roqmux->quicmux) {
+        ret = gst_element_send_event (roqmux->quicmux, event);
+      }
       g_rec_mutex_unlock (&roqmux->mutex);
       break;
     default:

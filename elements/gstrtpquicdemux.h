@@ -109,11 +109,11 @@ struct _GstRtpQuicDemux
   GHashTable *src_ssrcs;
 
   /*
-   * GHashTable <guint> { // SSRCs
+   * GHashTable <gint64> { // Flow ID
    *    GstPad;
    * }
    */
-  GHashTable *src_ssrcs_rtcp;
+  GHashTable *src_rtcp_flow_ids;
 
   /*
    * GHashTable <guint64> { // QUIC Stream ID

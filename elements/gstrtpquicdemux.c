@@ -187,7 +187,7 @@ static GstStaticPadTemplate rtp_request_src_factory =
  * Since: 1.24
  */
 static GstStaticPadTemplate rtcp_request_src_factory =
-    GST_STATIC_PAD_TEMPLATE ("rtcp_request_src_%u_%u",
+    GST_STATIC_PAD_TEMPLATE ("rtcp_request_src_%u",
         GST_PAD_SRC,
         GST_PAD_REQUEST,
         GST_STATIC_CAPS ("application/x-rtcp")
@@ -343,8 +343,8 @@ gst_rtp_quic_demux_init (GstRtpQuicDemux * roqdemux)
 {
   roqdemux->src_ssrcs = g_hash_table_new_full (g_int_hash, g_int_equal,
       g_free, (GDestroyNotify) rtp_quic_demux_ssrc_hash_destroy);
-  roqdemux->src_ssrcs_rtcp = g_hash_table_new_full (g_int_hash, g_int_equal,
-      g_free, (GDestroyNotify) rtp_quic_demux_ssrc_hash_destroy);
+  roqdemux->src_rtcp_flow_ids = g_hash_table_new_full (g_int64_hash,
+      g_int64_equal, g_free, (GDestroyNotify) rtp_quic_demux_ssrc_hash_destroy);
   roqdemux->quic_streams = g_hash_table_new_full (g_int64_hash, g_int64_equal,
       NULL, gst_object_unref);
 
@@ -563,21 +563,6 @@ gst_rtp_quic_demux_src_event (GstPad *pad, GstObject *parent, GstEvent *event)
           if (done) {
             GST_INFO_OBJECT (roqdemux, "%screased buffer offset for pad %p by "
                 "%ld to %ld", (diff > 0)?("In"):("De"), pad, diff, src->offset);
-          } else {
-            pt_tables = g_hash_table_get_values (roqdemux->src_ssrcs_rtcp);
-            for (; pt_tables != NULL; pt_tables = pt_tables->next) {
-              GList *srcs =
-                  g_hash_table_get_values ((GHashTable *) pt_tables->data);
-              for (; srcs != NULL; srcs = srcs->next) {
-                src = (RtpQuicDemuxSrc *) srcs->data;
-                if (src->src == pad) {
-                  GST_FIXME_OBJECT (roqdemux,
-                      "Deal with buffer offsets for RTCP");
-                  break;
-                }
-              }
-            }
-
           }
 
           break;
@@ -820,14 +805,14 @@ rtp_quic_demux_get_rtp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc,
 }
 
 GstPad *
-rtp_quic_demux_get_rtcp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc)
+rtp_quic_demux_get_rtcp_src_pad (GstRtpQuicDemux *roqdemux)
 {
   GstPad *rv;
 
-  if (g_hash_table_lookup_extended (roqdemux->src_ssrcs_rtcp, &ssrc, NULL,
-      (gpointer) &rv) == FALSE) {
-    gint *ssrc_ptr = g_new (gint, 1);
-    *ssrc_ptr = ssrc;
+  if (g_hash_table_lookup_extended (roqdemux->src_rtcp_flow_ids,
+          &roqdemux->rtcp_flow_id, NULL, (gpointer) &rv) == FALSE) {
+    gint64 *flow_id_ptr = g_new (gint64, 1);
+    *flow_id_ptr = roqdemux->rtcp_flow_id;
 
     gchar *padname;
     GstCaps *caps;
@@ -838,7 +823,7 @@ rtp_quic_demux_get_rtcp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc)
 
     if (rv == NULL) {
       padname = g_strdup_printf (rtcp_request_src_factory.name_template,
-          (guint32) roqdemux->rtcp_flow_id, ssrc);
+          (guint32) *flow_id_ptr);
       rv = gst_pad_new_from_static_template (&rtcp_request_src_factory,
         padname);
 
@@ -850,7 +835,7 @@ rtp_quic_demux_get_rtcp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc)
       g_free (padname);
 
       GST_DEBUG_OBJECT (roqdemux, "Adding src pad %" GST_PTR_FORMAT 
-          " for SSRC %u, RTP flow ID %lu", rv, ssrc, roqdemux->rtcp_flow_id);
+          " for RTCP flow ID %lu", rv, roqdemux->rtcp_flow_id);
       gst_element_add_pad (GST_ELEMENT (roqdemux), rv);
 
       gst_pad_set_active (rv, TRUE);
@@ -862,6 +847,9 @@ rtp_quic_demux_get_rtcp_src_pad (GstRtpQuicDemux *roqdemux, guint32 ssrc)
 
       gst_pad_sticky_events_foreach (rv, forward_sticky_events, NULL);
     }
+
+    g_assert (
+      g_hash_table_insert (roqdemux->src_rtcp_flow_ids, flow_id_ptr, rv));
   }
 
   return rv;
@@ -883,11 +871,11 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
   } else if (flow_id == roqdemux->rtcp_flow_id ||
       (roqdemux->rtcp_flow_id == -1 && roqdemux->rtp_flow_id != -1 &&
         flow_id == roqdemux->rtp_flow_id + 1)) {
-    srcpad = rtp_quic_demux_get_rtcp_src_pad (roqdemux, ssrc);
+    srcpad = rtp_quic_demux_get_rtcp_src_pad (roqdemux);
   } else if (roqdemux->rtp_flow_id == roqdemux->rtcp_flow_id) {
       if ((pt & 0x7f) >= 64 && (pt & 0x7f) <= 95) {
       /* RFC 5761 - Probably RTCP */
-      srcpad = rtp_quic_demux_get_rtcp_src_pad (roqdemux, ssrc);
+      srcpad = rtp_quic_demux_get_rtcp_src_pad (roqdemux);
     } else {
       /* Probably RTP */
       srcpad = rtp_quic_demux_get_rtp_src_pad (roqdemux, ssrc, pt, offset);
@@ -907,7 +895,11 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
     gchar *parent_name;
 
     peer = gst_pad_get_peer (srcpad);
-    if (!GST_IS_GHOST_PAD (peer)) {
+    if (peer == NULL) {
+      GST_DEBUG_OBJECT (roqdemux, "Couldn't get peer element for srcpad %"
+          GST_PTR_FORMAT, srcpad);
+      return srcpad;
+    } else if (!GST_IS_GHOST_PAD (peer)) {
       peer_parent = gst_pad_get_parent_element (peer);
       parent_name = gst_element_get_name (peer_parent);
 
@@ -918,7 +910,7 @@ rtp_quic_demux_get_src_pad (GstRtpQuicDemux *roqdemux, guint64 flow_id,
       g_free (parent_name);
       gst_object_unref (peer_parent);
     } else {
-      GstGhostPad *gpad = GST_GHOST_PAD (gst_pad_get_parent (peer));
+      GstGhostPad *gpad = GST_GHOST_PAD (peer);
 
       GST_DEBUG_OBJECT (roqdemux, "Mapped RT%sP src pad for flow ID %lu, "
           "SSRC %u, PT %u with padname %s linked to ghost pad %p",
