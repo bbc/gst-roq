@@ -97,15 +97,35 @@ check_gst_element () {
 endpoint_mode=""
 # stream or datagram
 payload_mode=""
-# send or receive
+# sendi, receive or bidi
 participant_mode=""
+
+multi_stream=FALSE
+rtcp=TRUE
+
+sending_video_pt=96
+sending_audio_pt=97
+receiving_video_pt=$sending_video_pt
+receiving_audio_pt=$sending_audio_pt
+sending_video_flow_id=0
+sending_audio_flow_id=2
+receiving_video_flow_id=$sending_video_flow_id
+receiving_audio_flow_id=$sending_audio_flow_id
+
+sending_ssrc=123456
+receiving_ssrc=123456
 
 rtp_payload_mtu_stream=4000000000
 rtp_payload_mtu_dgram=1370
 rtp_payload_type=96
 rtp_flow_id=0
-roq_alpn="roq-09"
+roq_alpn="roq-12"
 quic_max_stream_data_uni_remote=4000000000000000
+
+mtu=0
+
+multi_stream=FALSE
+rtcp=FALSE
 
 video_x_res=480
 video_y_res=360
@@ -130,7 +150,7 @@ if [ $? -ne 4 ]; then
     exit 1
 fi
 
-OPTS=$(getopt -o 'hlcsfdSR' --long 'help,server,client,stream,stream-per-frame,datagram,send,receive' -n "$0" -- "$@")
+OPTS=$(getopt -o 'hlcsfdSRBMC' --long 'help,server,client,stream,stream-per-frame,datagram,send,receive,bidi,multi,rtcp' -n "$0" -- "$@")
 
 if [ $? -ne 0 ]; then
     echo "Couldn't parse options" >&2
@@ -155,6 +175,11 @@ while true; do
             echo -e "Participant mode:"
             echo -e "\t-S\t--send\t\t\tSender"
             echo -e "\t-R\t--receive\t\tReceiver"
+            echo -e "\t-B\t--bidi\t\t\tBidirectional\n"
+            echo -e "Multiple streams:"
+            echo -e "\t-M\t--multi\t\t\tMultiple stream mode (1x video, 1x audio)\n"
+            echo -e "RTCP:"
+            echo -e "\t-C\t--rtcp\t\t\tInclude RTCP Signalling"
             exit 0
             ;;
         '-l'|'--server')
@@ -181,6 +206,7 @@ while true; do
                 exit 2
             fi
             payload_mode="stream"
+            mtu=${rtp_payload_mtu_stream}
             shift
             continue
             ;;
@@ -190,6 +216,7 @@ while true; do
                 exit 2
             fi
             payload_mode="stream-per-frame"
+            mtu=${rtp_payload_mtu_stream}
             shift
             continue
             ;;
@@ -199,6 +226,7 @@ while true; do
                 exit 2
             fi
             payload_mode="datagram"
+            mtu=${rtp_payload_mtu_dgram}
             shift
             continue
             ;;
@@ -216,7 +244,26 @@ while true; do
                 echo "Cannot set participant mode more than once!"
                 exit 2
             fi
-            participant_mode="receive"
+            participant_mode="recv"
+            shift
+            continue
+            ;;
+        '-B'|'--bidi')
+            if [[ $participant_mode != "" ]]; then
+                echo "Cannot set participant mode more than once!"
+                exit 2
+            fi
+            participant_mode="bidi"
+            shift
+            continue
+            ;;
+        '-M'|'--multi')
+            multi_stream=TRUE
+            shift
+            continue
+            ;;
+        '-C'|'--rtcp')
+            rtcp=TRUE
             shift
             continue
             ;;
@@ -242,25 +289,82 @@ else
     exit 4
 fi
 
-if [[ $payload_mode == "datagram" ]]; then
+#
+# RTCP only carried in datagrams for timing/loss reasons
+#
+if [[ $payload_mode == "datagram" || $rtcp == TRUE ]]; then
     quic_opts+=" enable-datagrams=true"
 fi
 
-if [[ $participant_mode == "send" ]]; then
-    roqmux_opts=""
-    mtu=$rtp_payload_mtu_stream
-    if [[ $payload_mode == "datagram" ]]; then
-        roqmux_opts="use-datagram=true"
-        mtu=$rtp_payload_mtu_dgram
-    elif [[ $payload_mode == "stream-per-frame" ]]; then
-        roqmux_opts="stream-boundary=frame stream-packing=1"
+rtpbin=""
+recv_pipeline=""
+send_pipeline=""
+
+if [[ $rtcp == TRUE ]]; then
+    rtpbin="rtpbin name=rbin "
+fi
+
+if [[ $participant_mode == "recv" ]]; then
+    recv_pipeline="quicsrc ${quic_opts} ! quicdemux name=qd "
+    if [[ $rtcp == TRUE ]]; then
+        send_pipeline="quicmux name=qm ! quicsink ${quic_opts} "
     fi
-    pipeline="videotestsrc num-buffers=$((${video_framerate}*${video_secs})) ! videoconvert ! video/x-raw,width=(int)${video_x_res},height=(int)${video_y_res},framerate=${video_framerate}/1 ! vp8enc ! rtpvp8pay mtu=${mtu} ! application/x-rtp,payload=(int)${rtp_payload_type},clock-rate=(int)90000 ! rtpquicmux rtp-flow-id=${rtp_flow_id} ${roqmux_opts} ! quicmux ! quicsink ${quic_opts}"
-elif [[ $participant_mode == "receive" ]]; then
-    pipeline="quicsrc ${quic_opts} ! quicdemux ! rtpquicdemux rtp-flow-id=${rtp_flow_id} ! application/x-rtp,payload=(int)96,clock-rate=(int)90000,encoding-name=VP8 ! rtpvp8depay ! queue ! decodebin ! queue ! autovideosink"
+elif [[ $participant_mode == "send" ]]; then
+    send_pipeline="quicmux name=qm ! quicsink ${quic_opts} "
+    if [[ $rtcp == TRUE ]]; then
+        recv_pipeline="quicsrc ${quic_opts} ! quicdemux name=qd "
+    fi
+elif [[ $participant_mode == "bidi" ]]; then
+    recv_pipeline="quicsrc ${quic_opts} ! quicdemux name=qd "
+    send_pipeline="quicmux name=qm ! quicsink ${quic_opts} "
+    if [[ $endpoint_mode == "client" ]]; then
+        receiving_video_pt=98
+        receiving_audio_pt=99
+        receiving_video_flow_id=4
+        receiving_audio_flow_id=6
+        receiving_ssrc=123457
+    else
+        sending_video_pt=98
+        sending_audio_pt=99
+        sending_video_flow_id=4
+        sending_audio_flow_id=6
+        sending_ssrc=123457
+    fi
 else
     echo "Need to set the participant mode to --send or --receive"
     exit 4
+fi
+
+if [[ $participant_mode == "recv" || $participant_mode == "bidi" ]]; then
+    recv_pipeline+=" qd. ! rtpquicdemux rtp-flow-id=${receiving_video_flow_id} ! application/x-rtp,payload=${receiving_video_pt},clock-rate=90000,encoding-name=VP8,media=video ! "
+    if [[ $rtcp == TRUE ]]; then
+        recv_pipeline+="rbin.recv_rtp_sink_0 qd. ! rtpquicdemux rtcp-flow-id=$((${receiving_video_flow_id}+1)) ! rbin.recv_rtcp_sink_0 rbin.send_rtcp_src_0 ! rtpquicmux rtcp-flow-id=$((${receiving_video_flow_id}+1)) use-datagram=TRUE ! qm. rbin.recv_rtp_src_0_${receiving_ssrc}_${receiving_video_pt} ! "
+    fi
+    recv_pipeline+="rtpvp8depay ! queue2 ! decodebin ! queue2 ! autovideosink "
+
+    if [[ $multi_stream == TRUE ]]; then
+        recv_pipeline+=" qd. ! rtpquicdemux rtp-flow-id=${receiving_audio_flow_id} ! application/x-rtp,payload=${receiving_audio_pt},clock-rate=48000,encoding-name=OPUS,media=audio ! "
+        if [[ $rtcp == TRUE ]]; then
+            recv_pipeline+="rbin.recv_rtp_sink_1 qd. ! rtpquicdemux rtcp-flow-id=$((${receiving_audio_flow_id}+1)) ! rbin.recv_rtcp_sink_1 rbin.send_rtcp_src_1 ! rtpquicmux rtcp-flow-id=$((${receiving_audio_flow_id}+1)) use-datagram=TRUE ! qm. rbin.recv_rtp_src_1_${receiving_ssrc}_${receiving_audio_pt} ! "
+        fi
+        recv_pipeline+="rtpopusdepay ! queue2 ! decodebin ! queue2 ! autoaudiosink "
+    fi
+fi
+
+if [[ $participant_mode == "send" || $participant_mode == "bidi" ]]; then
+    send_pipeline+="videotestsrc num-buffers=$((${video_framerate}*${video_secs})) is-live=true ! videoconvert ! video/x-raw,width=${video_x_res},height=${video_y_res},framerate=${video_framerate}/1 ! vp8enc ! rtpvp8pay mtu=${mtu} pt=${sending_video_pt} ssrc=${sending_ssrc} ! "
+    if [[ $rtcp == TRUE ]]; then
+        send_pipeline+="rbin.send_rtp_sink_2 qd. ! rtpquicdemux rtcp-flow-id=$((${sending_video_flow_id}+1)) ! rbin.recv_rtcp_sink_2 rbin.send_rtcp_src_2 ! rtpquicmux rtcp-flow-id=$((${sending_video_flow_id}+1)) use-datagram=TRUE ! qm. rbin.send_rtp_src_2 ! "
+    fi
+    send_pipeline+="rtpquicmux rtp-flow-id=${sending_video_flow_id} ${roq_mux_opts} ! qm. "
+
+    if [[ $multi_stream == TRUE ]]; then
+        send_pipeline+="audiotestsrc is-live=true ! audioconvert ! opusenc ! rtpopuspay mtu=${mtu} pt=${sending_audio_pt} ssrc=${sending_ssrc} ! "
+        if [[ $rtcp == TRUE ]]; then
+            send_pipeline+="rbin.send_rtp_sink_3 qd. ! rtpquicdemux rtcp-flow-id=$((${sending_audio_flow_id}+1)) ! rbin.recv_rtcp_sink_3 rbin.send_rtcp_src_3 ! rtpquicmux rtcp-flow-id=$((${sending_audio_flow_id}+1)) use-datagram=TRUE ! qm. rbin.send_rtp_src_3 ! "
+        fi
+        send_pipeline+="rtpquicmux rtp-flow-id=${sending_audio_flow_id} ${roq_mux_opts} ! qm. "
+    fi
 fi
 
 check_gst_element "quicsrc"; if [[ $? -ne 0 ]]; then exit -1; fi
@@ -277,4 +381,6 @@ echo "Running GStreamer..."
 
 set -x
 
-gst-launch-1.0 ${pipeline}
+gst-launch-1.0 -e ${rtpbin} ${recv_pipeline} ${send_pipeline}
+#echo "GStreamer pipeline:"
+#echo "gst-launch-1.0 -e ${rtpbin} ${recv_pipeline} ${send_pipeline}"
