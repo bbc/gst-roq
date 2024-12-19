@@ -162,6 +162,10 @@ gst_roq_src_bin_class_init (GstRoQSrcBinClass * klass)
           ROQ_FLOW_ID_ANY, QUICLIB_VARINT_MAX - 1, ROQ_FLOW_ID_DEFAULT,
           G_PARAM_READWRITE));
 
+  /*
+   * See the full list of common endpoint properties for QUIC transport
+   * handling in gstquiccommon.h
+   */
   gst_quiclib_common_install_endpoint_properties (gobject_class);
 
   gst_element_class_set_static_metadata (gstelement_class,
@@ -234,6 +238,10 @@ gst_roq_src_bin_set_property (GObject * object, guint prop_id,
   GST_DEBUG_OBJECT (self, "Setting property %s", pspec->name);
 
   switch (prop_id) {
+    /*
+     * See the full list of common endpoint properties for QUIC transport
+     * handling in gstquiccommon.h
+     */
     case PROP_QUIC_ENDPOINT_ENUM_CASES:
       if (prop_id == PROP_MAX_STREAM_DATA_UNI_REMOTE) {
         GST_DEBUG_OBJECT (self, "Setting max stream data uni to %lu", g_value_get_uint64 (value));
@@ -256,6 +264,10 @@ gst_roq_src_bin_get_property (GObject * object, guint prop_id,
   GstRoQSrcBin *self = GST_ROQ_SRC_BIN (object);
 
   switch (prop_id) {
+    /*
+     * See the full list of common endpoint properties for QUIC transport
+     * handling in gstquiccommon.h
+     */
     case PROP_QUIC_ENDPOINT_ENUM_CASES:
       g_object_get_property (G_OBJECT (self->quicsrc), pspec->name, value);
       break;

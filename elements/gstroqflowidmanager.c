@@ -42,6 +42,15 @@
  * Boston, MA 02111-1307, USA.
  */
 
+/*
+ * The GstROQFlowIDManager makes sure that there are no duplicated flow
+ * identifiers between instances of rtpquicmux within a GStreamer pipeline.
+ * 
+ * TODO: In future, it would be good if there was a way to make this somehow
+ * tied to a QUIC/RoQ connection, in case there are multiple RoQ sending
+ * connections in a single pipeline. Then the flow IDs can be duplicated.
+ */
+
 #include "gstroqflowidmanager.h"
 
 struct _GstROQFlowIDManager {

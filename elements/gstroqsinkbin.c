@@ -168,6 +168,10 @@ gst_roq_sink_bin_class_init (GstRoQSinkBinClass * klass)
 
   gst_quiclib_common_install_endpoint_properties (gobject_class);
 
+  /*
+   * See the full list of common endpoint properties for QUIC transport
+   * handling in gstquiccommon.h
+   */
   gst_rtp_quic_mux_install_properties_map (gobject_class);
 
   gst_element_class_set_static_metadata (gstelement_class,
@@ -235,6 +239,10 @@ gst_roq_sink_bin_set_property (GObject * object, guint prop_id,
   GstRoQSinkBin *self = GST_ROQ_SINK_BIN (object);
 
   switch (prop_id) {
+    /*
+     * See the full list of common endpoint properties for QUIC transport
+     * handling in gstquiccommon.h
+     */
     case PROP_QUIC_ENDPOINT_ENUM_CASES:
       g_object_set_property (G_OBJECT (self->quicsink), pspec->name, value);
       break;
@@ -256,6 +264,10 @@ gst_roq_sink_bin_get_property (GObject * object, guint prop_id,
   GstRoQSinkBin *self = GST_ROQ_SINK_BIN (object);
 
   switch (prop_id) {
+    /*
+     * See the full list of common endpoint properties for QUIC transport
+     * handling in gstquiccommon.h
+     */
     case PROP_QUIC_ENDPOINT_ENUM_CASES:
       if (self->quicsink) {
         g_object_get_property (G_OBJECT (self->quicsink), pspec->name, value);

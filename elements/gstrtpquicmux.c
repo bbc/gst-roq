@@ -182,8 +182,6 @@ enum
  *
  * Sink template for receiving RTP packets to send in a RoQ session, in the
  * form rtp_sink_<session_idx>_<ssrc>_<payload_type>
- *
- * Since: 1.24
  */
 static GstStaticPadTemplate rtp_sink_factory =
     GST_STATIC_PAD_TEMPLATE ("rtp_sink_%u_%u_%u",
@@ -197,8 +195,6 @@ static GstStaticPadTemplate rtp_sink_factory =
  *
  * Sink template for receiving RTCP packets to send in a RoQ session, in the
  * form rtp_sink_<session_idx>_<ssrc>_<payload_type>
- *
- * Since: 1.24
  */
 static GstStaticPadTemplate rtcp_sink_factory =
     GST_STATIC_PAD_TEMPLATE ("rtcp_sink_%u_%u_%u",

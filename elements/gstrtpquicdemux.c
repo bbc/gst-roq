@@ -138,8 +138,6 @@ enum
  *
  * Src template for sending RTP packets received from a RoQ session, in the
  * form rtp_sink_<session_idx>_<ssrc>_<payload_type>
- *
- * Since: 1.24
  */
 static GstStaticPadTemplate rtp_sometimes_src_factory =
     GST_STATIC_PAD_TEMPLATE ("rtp_sometimes_src_%u_%u_%u",
@@ -153,8 +151,6 @@ static GstStaticPadTemplate rtp_sometimes_src_factory =
  *
  * Src template for sending RTCP packets received from a RoQ session, in the
  * form rtp_sink_<session_idx>_<ssrc>_<payload_type>
- *
- * Since: 1.24
  */
 static GstStaticPadTemplate rtcp_sometimes_src_factory =
     GST_STATIC_PAD_TEMPLATE ("rtcp_somtimes_src_%u_%u",
@@ -168,8 +164,6 @@ static GstStaticPadTemplate rtcp_sometimes_src_factory =
  *
  * Src template for sending RTP packets received from a RoQ session, in the
  * form rtp_sink_<session_idx>_<ssrc>_<payload_type>
- *
- * Since: 1.24
  */
 static GstStaticPadTemplate rtp_request_src_factory =
     GST_STATIC_PAD_TEMPLATE ("rtp_request_src_%u_%u_%u",
@@ -183,8 +177,6 @@ static GstStaticPadTemplate rtp_request_src_factory =
  *
  * Src template for sending RTCP packets received from a RoQ session, in the
  * form rtp_sink_<session_idx>_<ssrc>_<payload_type>
- *
- * Since: 1.24
  */
 static GstStaticPadTemplate rtcp_request_src_factory =
     GST_STATIC_PAD_TEMPLATE ("rtcp_request_src_%u",
