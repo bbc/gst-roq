@@ -130,10 +130,6 @@
 #include "gstrtpquicmux.h"
 #include "gstroqflowidmanager.h"
 #include <gstquiccommon.h>
-/* DEBUGGING ONLY */
-#include <gstquicstream.h>
-#include <gstquicdatagram.h>
-/* END DEBUGGING ONLY */
 
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -320,7 +316,6 @@ gst_rtp_quic_mux_init (GstRtpQuicMux * roqmux)
 
   roqmux->quicmux = NULL;
 
-  /* TODO: How to make this unique? */
   do {
     roqmux->rtp_flow_id = (gint64) g_random_int_range (0, 2147483647);
   } while (!gst_roq_flow_id_manager_new_flow_id (roqmux->rtp_flow_id));
@@ -666,64 +661,6 @@ rtp_quic_mux_foreach_sticky_event (GstPad *pad, GstEvent **event,
   ((uint64_t)(ntohl((uint32_t)(N))) << 32 | ntohl((uint32_t)((N) >> 32)))
 #endif /* !WORDS_BIGENDIAN */
 
-#if 0
-void
-rtp_quic_mux_print_buffer (GstRtpQuicMux *mux, GstBuffer *buf)
-{
-  guint offset = 0;
-  guint idx;
-
-  GST_DEBUG_OBJECT (mux, "GstBuffer %p has %u memory blocks",
-      buf, gst_buffer_n_memory (buf));
-
-  /*
-   * Format:
-   *
-   * Buffer 0 (4):
-   *    00000000 (00000000): e0 a1 b9 f3
-   * Buffer 1 (12):
-   *    00000000 (00000004): 01 45 aa f1 57 7f 21 00 00 9a be f1
-   * Buffer 2 (1388):
-   *    00000000 (00000016): a1 e7 ff 00 00 00 00 00 00 00 16 eb eb a0 f7 44
-   *    00000016 (00000032): c4 d9 00 11 22 33 44 55 66 77 88 99 aa bb cc dd
-   *    00000032 (00000048): (...)
-   */
-
-  for (idx = 0; idx < gst_buffer_n_memory (buf); idx++) {
-    GstMemory *mem;
-    GstMapInfo map;
-    guint line_idx;
-
-    mem = gst_buffer_peek_memory (buf, idx);
-    gst_memory_map (mem, &map, GST_MAP_READ);
-
-    GST_DEBUG_OBJECT (mux, "Buffer %u (%lu)", idx, map.size);
-
-    for (line_idx = 0; line_idx < (map.size / 16) + 1; line_idx++) {
-      gchar bufline[80];
-      gint bufline_offset = 0;
-      guint data_idx = 0;
-
-      bufline_offset = sprintf (bufline, "%08u (%08u):", line_idx * 16, offset + line_idx * 16);
-
-      for (data_idx = line_idx * 16; data_idx < map.size && data_idx < (line_idx + 1) * 16; data_idx++) {
-        guchar top_nibble = (map.data[data_idx] % 0xf0) >> 4;
-        guchar bottom_nibble = map.data[data_idx] % 0x0f;
-        bufline_offset += sprintf (bufline + bufline_offset, " %c%c",
-            (top_nibble > 9)?(top_nibble + 87):(top_nibble + 48),
-            (bottom_nibble > 9)?(bottom_nibble + 87):(bottom_nibble + 48));
-      }
-
-      GST_DEBUG_OBJECT (mux, "\t%s", bufline);
-    }
-
-    offset += map.size;
-
-    gst_memory_unmap (mem, &map);
-  }
-}
-#endif
-
 gboolean
 rtp_quic_mux_write_payload_header (GstBuffer **buf, gint64 stream_type,
     gint64 flow_id, gboolean length)
@@ -894,6 +831,8 @@ rtp_quic_mux_new_uni_src_pad (GstRtpQuicMux *roqmux, GstPad *sinkpad)
           GST_ERROR_OBJECT (roqmux, "Pad %" GST_PTR_FORMAT " refused link",
             remote);
           break;
+        default:
+          break;
       }
 
       gst_object_unref (rv);
@@ -1021,8 +960,6 @@ gst_rtp_quic_mux_rtp_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
   GST_DEBUG_OBJECT (roqmux, "Received buffer of length %lu bytes",
       rtp_frame_len);
-
-  GST_QUICLIB_PRINT_BUFFER (roqmux, buf);
 
   if (!roqmux->use_datagrams) {
     GstCaps *padcaps;

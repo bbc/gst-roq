@@ -213,8 +213,6 @@ gst_roq_src_bin_init (GstRoQSrcBin * self)
   g_signal_connect_object (self->rtpquicdemux, "pad-added",
       G_CALLBACK (gst_roq_src_bin_rtpquicdemux_pad_added_cb), self, 0);
 
-  /*g_warn_if_fail (gst_quic_demux_add_peer ((GstQuicDemux *) self->quicdemux,
-      self->rtpquicdemux));*/
   g_signal_emit_by_name (self->quicdemux, "add-peer", self->rtpquicdemux, &rv);
   if (!rv) {
     GST_WARNING_OBJECT (self,

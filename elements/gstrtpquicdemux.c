@@ -953,7 +953,6 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
     stream = g_hash_table_lookup (roqdemux->quic_streams,
         &stream_meta->stream_id);
     g_return_val_if_fail (stream, GST_FLOW_NOT_LINKED);
-    /*g_return_val_if_fail (GST_IS_PAD (stream->onward_src_pad), GST_FLOW_ERROR);*/
 
     GST_TRACE_OBJECT (roqdemux, "Stream %lu offset %lu%s, %sonward pad set %p, "
         "will %smatch uni stream type %lu", stream_meta->stream_id,
@@ -1198,8 +1197,6 @@ gst_rtp_quic_demux_chain (GstPad *pad, GstObject *parent, GstBuffer *buf)
         GST_OBJECT_REFCOUNT_VALUE (target_buffer),
         GST_TIME_ARGS (target_buffer->pts), GST_TIME_ARGS (target_buffer->dts),
         target_pad);
-
-    GST_QUICLIB_PRINT_BUFFER (roqdemux, target_buffer);
 
     if (stream && stream_meta->final) {
       g_hash_table_remove (roqdemux->quic_streams, &stream_meta->stream_id);

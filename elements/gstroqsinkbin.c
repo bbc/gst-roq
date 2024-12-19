@@ -140,23 +140,9 @@ static void gst_roq_sink_bin_get_property (GObject * object,
 
 static gboolean gst_roq_sink_bin_query (GstElement *parent, GstQuery *query);
 
-#if 0
-static gboolean gst_roq_sink_bin_sink_event (GstPad * pad,
-    GstObject * parent, GstEvent * event);
-static GstFlowReturn gst_roq_sink_bin_rtp_chain (GstPad * pad,
-    GstObject * parent, GstBuffer * buf);
-static GstFlowReturn gst_roq_sink_bin_rtcp_chain (GstPad * pad,
-    GstObject * parent, GstBuffer * buf);
-#endif
-
 static GstPad * gst_roq_sink_bin_request_new_pad (GstElement *element,
     GstPadTemplate *templ, const gchar *name, const GstCaps *caps);
 static void gst_roq_sink_bin_release_pad (GstElement *element, GstPad *pad);
-
-#if 0
-static void gst_roq_sink_bin_rtpquicdemux_pad_added_cb (GstElement * element,
-    GstPad * pad, gpointer data);
-#endif
 
 /* GObject vmethod implementations */
 
@@ -239,12 +225,6 @@ gst_roq_sink_bin_init (GstRoQSinkBin * self)
 
   gst_bin_add (GST_BIN (self), self->quicsink);
 
-  /*g_signal_connect_object (self->rtpquicdemux, "pad-added",
-      G_CALLBACK (gst_roq_sink_bin_rtpquicdemux_pad_added_cb), self, 0);*/
-
-  /*g_warn_if_fail (gst_quic_demux_add_peer ((GstQuicDemux *) self->quicdemux,
-      self->rtpquicdemux));*/
-
   gst_element_link_pads (self->quicmux, "src", self->quicsink, "sink");
 }
 
@@ -326,8 +306,6 @@ gst_roq_sink_bin_request_new_pad (GstElement *element, GstPadTemplate *templ,
 
   g_mutex_lock (&self->mutex);
 
-  /*pad_templates = (GList *) gst_element_factory_get_static_pad_templates (
-      GST_ELEMENT_FACTORY (self->rtpquicmux));*/
   pad_templates = gst_element_get_pad_template_list (self->rtpquicmux);
 
   for (; pad_templates != NULL; pad_templates = g_list_next (pad_templates)) {
